@@ -59,13 +59,22 @@ func check() -> void:
 		return
 	_busy = true
 	_set_state(State.CHECKING, "Checking GitHub for updates…")
-	var res := await _http_get(API % V.REPO, true)
+	await _check()
 	_busy = false
+
+
+func _check() -> void:
+	var res := await _http_get(API % V.REPO, true)
 	if res.code == 401 or res.code == 403:
 		_set_state(State.ERROR, "GitHub rejected the token (HTTP %d). Check that it can read %s." % [res.code, V.REPO])
 		return
 	if res.code == 404:
-		_set_state(State.UP_TO_DATE, "No releases published yet.")
+		# A private repo answers 404 both for "no releases" and "can't see it".
+		var repo := await _http_get("https://api.github.com/repos/%s" % V.REPO, true)
+		if repo.code == 200:
+			_set_state(State.UP_TO_DATE, "No releases published yet.")
+		else:
+			_set_state(State.ERROR, "This token can't see %s. Give it \"Contents: read\" access to that repository." % V.REPO)
 		return
 	if res.code != 200:
 		_set_state(State.ERROR, "Update check failed (%s)." % _why(res))

@@ -634,7 +634,7 @@ func _fill_scoreboard() -> void:
 		_score_grid.add_child(T.label(p.display_name, 22, Settings.PLAYER_COLORS[p.color_idx % 4].lightened(0.2), true))
 		_score_grid.add_child(T.label(str(game.points.get(p.peer_id, 0)), 22))
 		for k in ["kills", "headshots", "downs", "revives"]:
-			_score_grid.add_child(T.label(str(s.get(k, "—")) if Net.is_host() else "—", 22))
+			_score_grid.add_child(T.label(str(s.get(k, "—")), 22))
 
 
 func _draw_cross() -> void:

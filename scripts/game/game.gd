@@ -124,7 +124,7 @@ func player_name(peer: int) -> String:
 func _client_loaded() -> void:
 	_loaded[multiplayer.get_remote_sender_id()] = true
 	# late-loading clients need the current points
-	_sync_points.rpc(points)
+	_sync_points.rpc(points, stats)
 
 
 # =========================================================================
@@ -394,14 +394,16 @@ func add_points(peer: int, amount: int) -> void:
 	points[peer] = int(points.get(peer, 0)) + amount
 	if amount > 0 and stats.has(peer):
 		stats[peer].earned += amount
-	_sync_points.rpc(points)
+	_sync_points.rpc(points, stats)
 
 
 @rpc("authority", "reliable", "call_local")
-func _sync_points(p: Dictionary) -> void:
+func _sync_points(p: Dictionary, s: Dictionary) -> void:
 	var me := multiplayer.get_unique_id()
 	var before := int(points.get(me, 0))
 	points = p
+	if not multiplayer.is_server():
+		stats = s
 	var delta := int(points.get(me, 0)) - before
 	if delta != 0 and hud and phase != "loading":
 		hud.points_popup(delta)
