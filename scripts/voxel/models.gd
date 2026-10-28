@@ -33,6 +33,7 @@ static func V(x: int, y: int, z: int) -> Vector3i:
 
 
 static func _part(b: VB, joint: Vector3i, scale: float) -> Dictionary:
+	b.dynamic = true
 	var jp := Vector3(joint) + Vector3(0.5, 0.0, 0.5)
 	return {"mesh": b.build(scale, jp), "joint": jp * scale}
 

@@ -4,6 +4,7 @@ extends RefCounted
 ## Voxels marked as glowing go to a second, emissive surface.
 
 const SHADER := preload("res://shaders/voxel.gdshader")
+const SHADER_STATIC := preload("res://shaders/voxel_static.gdshader")
 
 ## [normal, u, v] with u × v = normal, so quads wind consistently.
 const FACES := [
@@ -21,6 +22,8 @@ static var _materials := {}
 var vox := {}      # Vector3i -> Color
 var glow := {}     # Vector3i -> true
 var skip_bottom := false
+## Characters need hit-flash/dissolve; everything else uses the cheaper static shader.
+var dynamic := false
 
 
 ## Deterministic per-voxel colour variation so surfaces read as hand-painted.
@@ -32,7 +35,8 @@ static func vary(c: Color, p: Vector3i, amount: float) -> Color:
 
 
 func put(p: Vector3i, c: Color, noise := 0.0, glowing := false) -> void:
-	vox[p] = vary(c, p, noise)
+	# alpha carries the shader's per-voxel variation amount (see voxel.gdshader)
+	vox[p] = Color(c.r, c.g, c.b, clampf(noise, 0.0, 0.5))
 	if glowing:
 		glow[p] = true
 	else:
@@ -92,13 +96,16 @@ func bounds() -> AABB:
 	return AABB(Vector3(lo), Vector3(hi - lo + Vector3i.ONE))
 
 
-static func material(glowing: bool, strength := 2.5) -> ShaderMaterial:
-	var key := "%s_%s" % [glowing, strength]
+static func material(glowing: bool, strength := 2.5, scale := 0.0625, pivot := Vector3(0.5, 0, 0.5), dyn := false) -> ShaderMaterial:
+	var frac := Vector3(fposmod(pivot.x, 1.0), fposmod(pivot.y, 1.0), fposmod(pivot.z, 1.0))
+	var key := "%s_%s_%s_%s_%s" % [glowing, strength, scale, frac, dyn]
 	if not _materials.has(key):
 		var m := ShaderMaterial.new()
-		m.shader = SHADER
+		m.shader = SHADER if dyn else SHADER_STATIC
 		m.set_shader_parameter("emission_strength", strength if glowing else 0.0)
 		m.set_shader_parameter("roughness_base", 0.6 if glowing else 0.86)
+		m.set_shader_parameter("voxel_size", scale)
+		m.set_shader_parameter("pivot_frac", frac)
 		_materials[key] = m
 	return _materials[key]
 
@@ -111,12 +118,23 @@ func build(scale: float, pivot := Vector3.ZERO, glow_strength := 2.5) -> ArrayMe
 
 ## Mesh only `keys`, still culling against every voxel in the model. Used to
 ## split large maps into chunks without seams.
+##
+## Greedy meshing: faces in the same plane with the same colour and uniform
+## AO are merged into larger rectangles. Faces with AO gradients (corners,
+## creases) stay single quads so the baked shading is preserved.
 func build_subset(keys: Array, scale: float, pivot := Vector3.ZERO, glow_strength := 2.5) -> ArrayMesh:
 	var surf := [_new_arrays(), _new_arrays()]
+	# planes[face][plane_index] = {Vector2i(u, v): [color, ao, glowing]}
+	var planes := []
+	for fi in 6:
+		planes.append({})
 	for p in keys:
-		var col: Color = (vox[p] as Color).srgb_to_linear()
-		var target: Dictionary = surf[1] if glow.has(p) else surf[0]
-		for f in FACES:
+		var raw: Color = vox[p]
+		var col := Color(raw.r, raw.g, raw.b).srgb_to_linear()
+		col.a = raw.a
+		var glowing := glow.has(p)
+		for fi in 6:
+			var f: Array = FACES[fi]
 			var n: Vector3i = f[0]
 			if skip_bottom and n.y == -1:
 				continue
@@ -125,43 +143,101 @@ func build_subset(keys: Array, scale: float, pivot := Vector3.ZERO, glow_strengt
 				continue
 			var u: Vector3i = f[1]
 			var v: Vector3i = f[2]
-			var base := Vector3(p)
-			if n.x + n.y + n.z > 0:
-				base += Vector3(n)
 			var ao := [
 				_ao(q - u, q - v, q - u - v),
 				_ao(q + u, q - v, q + u - v),
 				_ao(q + u, q + v, q + u + v),
 				_ao(q - u, q + v, q - u + v),
 			]
-			var corners := [base, base + Vector3(u), base + Vector3(u + v), base + Vector3(v)]
-			var nf := Vector3(n)
-			var start: int = target.v.size()
-			for k in 4:
-				target.v.append((corners[k] - pivot) * scale)
-				target.n.append(nf)
-				var a: float = 1.0 if glow.has(p) else AO_CURVE[ao[k]]
-				target.c.append(Color(col.r * a, col.g * a, col.b * a))
-			# Clockwise winding (Godot front faces); flip the diagonal to
-			# follow the darker corners and avoid AO streaks.
-			if ao[0] + ao[2] >= ao[1] + ao[3]:
-				target.i.append_array([start, start + 2, start + 1, start, start + 3, start + 2])
+			if glowing or (ao[0] == ao[1] and ao[1] == ao[2] and ao[2] == ao[3]):
+				var a := _axis(n)
+				var plane: int = p[a]
+				if not planes[fi].has(plane):
+					planes[fi][plane] = {}
+				planes[fi][plane][Vector2i(p[_axis(u)], p[_axis(v)])] = [col, 3 if glowing else ao[0], glowing]
 			else:
-				target.i.append_array([start, start + 3, start + 1, start + 1, start + 3, start + 2])
+				_quad(surf[0], p, f, 1, 1, col, ao, scale, pivot)
+	for fi in 6:
+		var f: Array = FACES[fi]
+		var a := _axis(f[0])
+		var ua := _axis(f[1])
+		var va := _axis(f[2])
+		for plane in planes[fi]:
+			var cells: Dictionary = planes[fi][plane]
+			var order := cells.keys()
+			order.sort_custom(func(x: Vector2i, y: Vector2i): return x.y < y.y or (x.y == y.y and x.x < y.x))
+			var used := {}
+			for c in order:
+				if used.has(c):
+					continue
+				var sig: Array = cells[c]
+				var w := 1
+				while true:
+					var nc := Vector2i(c.x + w, c.y)
+					if used.has(nc) or not cells.has(nc) or cells[nc] != sig:
+						break
+					w += 1
+				var h := 1
+				var grow := true
+				while grow:
+					for i in w:
+						var nc := Vector2i(c.x + i, c.y + h)
+						if used.has(nc) or not cells.has(nc) or cells[nc] != sig:
+							grow = false
+							break
+					if grow:
+						h += 1
+				for j in h:
+					for i in w:
+						used[Vector2i(c.x + i, c.y + j)] = true
+				var origin := Vector3i.ZERO
+				origin[a] = plane
+				origin[ua] = c.x
+				origin[va] = c.y
+				var aov: int = sig[1]
+				_quad(surf[1] if sig[2] else surf[0], origin, f, w, h, sig[0], [aov, aov, aov, aov], scale, pivot, sig[2])
 	var mesh := ArrayMesh.new()
 	for k in 2:
-		var s: Dictionary = surf[k]
-		if s.v.is_empty():
+		var sa: Dictionary = surf[k]
+		if sa.v.is_empty():
 			continue
 		var arr := []
 		arr.resize(Mesh.ARRAY_MAX)
-		arr[Mesh.ARRAY_VERTEX] = s.v
-		arr[Mesh.ARRAY_NORMAL] = s.n
-		arr[Mesh.ARRAY_COLOR] = s.c
-		arr[Mesh.ARRAY_INDEX] = s.i
+		arr[Mesh.ARRAY_VERTEX] = sa.v
+		arr[Mesh.ARRAY_NORMAL] = sa.n
+		arr[Mesh.ARRAY_COLOR] = sa.c
+		arr[Mesh.ARRAY_INDEX] = sa.i
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, material(k == 1, glow_strength))
+		mesh.surface_set_material(mesh.get_surface_count() - 1, material(k == 1, glow_strength, scale, pivot, dynamic))
 	return mesh
+
+
+static func _axis(d: Vector3i) -> int:
+	return 0 if d.x != 0 else (1 if d.y != 0 else 2)
+
+
+## Emit one quad covering w × h faces starting at voxel p, for face f.
+func _quad(target: Dictionary, p: Vector3i, f: Array, w: int, h: int, col: Color, ao: Array, scale: float, pivot: Vector3, glowing := false) -> void:
+	var n: Vector3i = f[0]
+	var u := Vector3(f[1]) * w
+	var v := Vector3(f[2]) * h
+	var base := Vector3(p)
+	if n.x + n.y + n.z > 0:
+		base += Vector3(n)
+	var corners := [base, base + u, base + u + v, base + v]
+	var nf := Vector3(n)
+	var start: int = target.v.size()
+	for k in 4:
+		target.v.append((corners[k] - pivot) * scale)
+		target.n.append(nf)
+		var shade: float = 1.0 if glowing else AO_CURVE[ao[k]]
+		target.c.append(Color(col.r * shade, col.g * shade, col.b * shade, col.a))
+	# Clockwise winding (Godot front faces); flip the diagonal to follow the
+	# darker corners and avoid AO streaks.
+	if ao[0] + ao[2] >= ao[1] + ao[3]:
+		target.i.append_array([start, start + 2, start + 1, start, start + 3, start + 2])
+	else:
+		target.i.append_array([start, start + 3, start + 1, start + 1, start + 3, start + 2])
 
 
 func _ao(s1: Vector3i, s2: Vector3i, c: Vector3i) -> int:

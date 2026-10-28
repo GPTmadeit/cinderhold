@@ -17,12 +17,12 @@ void sky() {
 	float h = clamp(d.y, -1.0, 1.0);
 	vec3 col = mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.45));
 	// burning horizon: the ash wastes glow from the fires beyond the walls
-	col += ember * pow(1.0 - abs(h), 14.0) * (0.6 + 0.4 * sin(atan(d.x, d.z) * 3.0 + TIME * 0.05));
+	col += ember * pow(1.0 - abs(h), 14.0) * (0.6 + 0.4 * sin(atan(d.x, d.z) * 3.0));
 	// stars
 	vec3 cell = floor(d * 520.0);
 	float s = hash(cell);
 	if (s < star_density && h > 0.05) {
-		float tw = 0.6 + 0.4 * sin(TIME * (2.0 + s * 40.0) + s * 100.0);
+		float tw = 0.6 + 0.4 * sin(s * 7919.0);
 		col += vec3(0.8, 0.85, 1.0) * tw * smoothstep(0.05, 0.3, h) * (0.5 + s / star_density);
 	}
 	// moon with a soft halo

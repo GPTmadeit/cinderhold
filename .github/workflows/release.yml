@@ -1,0 +1,98 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching scripts/core/version.gd) to build every
+# platform and publish a release. Installed games pick up the content patch
+# (cinderhold-X.Y.Z.pck + manifest.json) from it without a reinstall.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: "4.7.2"
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag matches the game version
+        run: |
+          v=$(grep -oP 'VERSION := "\K[^"]+' scripts/core/version.gd)
+          engine=$(grep -oP 'ENGINE := "\K[^"]+' scripts/core/version.gd)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME does not match version.gd ($v)"; exit 1; }
+          [ "$engine" = "$GODOT_VERSION" ] || { echo "::error::version.gd ENGINE ($engine) != workflow GODOT_VERSION"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Install Godot and export templates
+        run: |
+          base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable
+          curl -fsSL -o godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip && sudo mv Godot_v${GODOT_VERSION}-stable_linux.x86_64 /usr/local/bin/godot
+          curl -fsSL -o templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          dest=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mkdir -p "$dest" && unzip -q templates.tpz && mv templates/* "$dest"/
+          rm -rf godot.zip templates.tpz templates
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Import project
+        run: godot --headless --path . --import || true
+
+      - name: Export
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: cinderhold
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p build/linux build/windows build/macos build/android dist
+          godot --headless --path . --export-release "Linux" build/linux/Cinderhold.x86_64
+          godot --headless --path . --export-release "Windows" build/windows/Cinderhold.exe
+          godot --headless --path . --export-release "macOS" build/macos/Cinderhold.zip
+          godot --headless --path . --export-release "Android" build/android/Cinderhold.apk
+          godot --headless --path . --export-pack "Linux" "dist/cinderhold-$VERSION.pck"
+          for f in build/linux/Cinderhold.x86_64 build/windows/Cinderhold.exe build/macos/Cinderhold.zip build/android/Cinderhold.apk "dist/cinderhold-$VERSION.pck"; do
+            [ -s "$f" ] || { echo "::error::export missing $f"; exit 1; }
+          done
+
+      - name: Package
+        run: |
+          (cd build/linux && zip -q -9 ../../dist/Cinderhold-linux-x86_64.zip Cinderhold.x86_64)
+          (cd build/windows && zip -q -9 ../../dist/Cinderhold-windows-x86_64.zip Cinderhold.exe)
+          cp build/macos/Cinderhold.zip dist/Cinderhold-macos-universal.zip
+          cp build/android/Cinderhold.apk dist/Cinderhold-android.apk
+          sha=$(sha256sum "dist/cinderhold-$VERSION.pck" | cut -d' ' -f1)
+          printf '{"version":"%s","engine":"%s","pck":"cinderhold-%s.pck","sha256":"%s"}\n' \
+            "$VERSION" "$GODOT_VERSION" "$VERSION" "$sha" > dist/manifest.json
+          cat dist/manifest.json
+          ls -la dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          range=${prev:+$prev..}$GITHUB_REF_NAME
+          {
+            echo "Installed copies update in-game: Settings → Updates (or the main menu badge)."
+            echo
+            echo "### Changes"
+            git log --pretty='- %s' "$range"
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Cinderhold $GITHUB_REF_NAME" --notes-file notes.md

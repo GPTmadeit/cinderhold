@@ -20,14 +20,24 @@ func _ready() -> void:
 		var pck := PATCH_DIR.path_join(str(patch.file))
 		if FileAccess.file_exists(pck) and ProjectSettings.load_resource_pack(pck, true):
 			print("Cinderhold: mounted patch ", patch.version)
+			# Scripts loaded before the mount (this file's preloads, the
+			# autoloads and their dependencies) are refreshed from the patch.
+			# Cached scripts are not recompiled by a cache refresh, so the
+			# services are compiled fresh from the patch (IGNORE_DEEP) and the
+			# cache is refreshed for everything loaded later.
+			ResourceLoader.load("res://scripts/core/version.gd", "", ResourceLoader.CACHE_MODE_REPLACE_DEEP)
 			for service in SERVICES:
 				var node := get_node("/root/" + service)
-				node.set_script(ResourceLoader.load(SERVICES[service], "", ResourceLoader.CACHE_MODE_REPLACE))
+				node.set_script(ResourceLoader.load(SERVICES[service], "", ResourceLoader.CACHE_MODE_IGNORE_DEEP))
 		else:
 			push_warning("Cinderhold: patch %s could not be mounted" % patch.version)
 	for service in SERVICES:
 		get_node("/root/" + service).setup()
 	var args := OS.get_cmdline_user_args()
+	if "--print-version" in args:
+		print("cinderhold version ", get_node("/root/Updater").current_version(), " built-in ", built_in)
+		get_tree().quit()
+		return
 	_dev_flags(args)
 	if "--solo" in args:
 		get_node("/root/Net").start_solo()
@@ -41,6 +51,10 @@ func _dev_flags(args: PackedStringArray) -> void:
 	var q := args.find("--quality")
 	if q != -1 and q + 1 < args.size():
 		get_node("/root/Settings").data.video.quality = int(args[q + 1])   # not saved
+		get_node("/root/Settings").apply_video()
+	if "--fps-log" in args:
+		# benchmark: don't let a hidden, throttled window idle the GPU
+		get_node("/root/Settings").data.video.vsync = false
 		get_node("/root/Settings").apply_video()
 	if "--shot" in args or "--fps-log" in args:
 		var d: Node = preload("res://scripts/core/dev_tools.gd").new()

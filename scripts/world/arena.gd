@@ -101,12 +101,20 @@ func build(for_menu := false) -> void:
 	_world_body.collision_layer = 1
 	_world_body.collision_mask = 0
 	add_child(_world_body)
-	_build_environment()
-	_build_terrain()
+	var off := OS.get_environment("CINDER_DISABLE").split(",")   # dev bisecting
+	if not "env" in off:
+		_build_environment()
+	if not "terrain" in off:
+		_build_terrain()
 	_build_props()
 	_build_doors()
 	_build_interactables()
-	_build_atmosphere()
+	if not "atmosphere" in off:
+		_build_atmosphere()
+	for n in get_children():
+		if ("lights" in off and n is Light3D) or ("particles" in off and n is GPUParticles3D) \
+				or ("labels" in off and n is Label3D):
+			n.queue_free()
 	_recompute_active()
 
 
@@ -367,8 +375,11 @@ func _add_light(pos: Vector3, color: Color, rng_m: float, energy: float, shadows
 	l.omni_range = rng_m
 	l.light_energy = energy
 	l.omni_attenuation = 1.4
-	l.shadow_enabled = shadows and Settings.quality() >= 2
+	l.shadow_enabled = shadows and Settings.quality() >= 3
 	l.light_volumetric_fog_energy = 1.5
+	l.distance_fade_enabled = true
+	l.distance_fade_begin = 24.0
+	l.distance_fade_length = 6.0
 	add_child(l)
 	_lights.append({"light": l, "base": energy, "seed": _rng.randf() * 100.0})
 	return l
@@ -483,6 +494,9 @@ func _build_environment() -> void:
 	var sm := ShaderMaterial.new()
 	sm.shader = preload("res://shaders/night_sky.gdshader")
 	sky.sky_material = sm
+	# Static sky: rendered into the radiance map once, not every frame.
+	sky.process_mode = Sky.PROCESS_MODE_QUALITY
+	sky.radiance_size = Sky.RADIANCE_SIZE_64
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
@@ -515,8 +529,10 @@ func _build_environment() -> void:
 	moon.light_color = Color("8fa0d8")
 	moon.light_energy = 0.85
 	moon.rotation_degrees = Vector3(-52, 150, 0)
-	moon.shadow_enabled = true
-	moon.directional_shadow_max_distance = 45.0
+	var q := Settings.quality()
+	moon.shadow_enabled = q >= 1
+	moon.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS if q < 3 else DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	moon.directional_shadow_max_distance = [0.0, 22.0, 32.0, 45.0][q]
 	moon.light_volumetric_fog_energy = 0.4
 	add_child(moon)
 
@@ -560,7 +576,8 @@ func _process(dt: float) -> void:
 	for l in _lights:
 		var s: float = l.seed
 		var f := 0.82 + 0.1 * sin(_time * 9.0 + s) + 0.08 * sin(_time * 23.0 + s * 2.0)
-		l.light.light_energy = l.base * f
+		if is_instance_valid(l.light):
+			l.light.light_energy = l.base * f
 
 
 # =========================================================================

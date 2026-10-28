@@ -48,7 +48,10 @@ var binds := {}
 func setup() -> void:
 	data = DEFAULTS.duplicate(true)
 	var cfg := ConfigFile.new()
-	if cfg.load(PATH) == OK:
+	var first_run := cfg.load(PATH) != OK
+	if first_run:
+		_auto_quality()
+	else:
 		for section in data:
 			for key in data[section]:
 				data[section][key] = cfg.get_value(section, key, data[section][key])
@@ -60,6 +63,16 @@ func setup() -> void:
 	_build_input_map()
 	apply_video()
 	apply_audio()
+
+
+## First launch: pick a preset the GPU can actually run.
+func _auto_quality() -> void:
+	var gpu := RenderingServer.get_video_adapter_name().to_lower()
+	var weak := OS.has_feature("mobile") or gpu.contains("llvmpipe") or gpu.contains("swiftshader") \
+		or (gpu.contains("intel") and (gpu.contains("hd graphics") or gpu.contains("uhd graphics")))
+	data.video.quality = 0 if weak else 2
+	data.video.render_scale = 0.85 if weak else 1.0
+	print("Cinderhold: first run on '%s', quality %s" % [gpu, QUALITY_NAMES[data.video.quality]])
 
 
 func get_v(section: String, key: String):
@@ -211,8 +224,8 @@ func configure_environment(env: Environment) -> void:
 	var fp := _forward_plus()
 	env.glow_enabled = q >= 1
 	env.ssao_enabled = q >= 2 and fp
-	env.ssil_enabled = q >= 3 and fp
-	env.volumetric_fog_enabled = q >= 2 and fp
+	env.ssil_enabled = false
+	env.volumetric_fog_enabled = q >= 3 and fp
 	env.sdfgi_enabled = false
 	env.fog_enabled = true
 

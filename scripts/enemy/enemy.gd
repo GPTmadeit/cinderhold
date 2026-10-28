@@ -45,6 +45,7 @@ func setup(g: Node, id: int, k: String, variant: int, pos: Vector3, health: floa
 	game = g
 	enemy_id = id
 	kind = k
+	add_to_group("enemies")
 	hp = health
 	tier = speed_tier
 	_rng.seed = id * 977
