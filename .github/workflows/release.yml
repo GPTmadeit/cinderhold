@@ -3,9 +3,14 @@ name: Release
 # Push a tag like v0.2.0 (matching scripts/core/version.gd) to build every
 # platform and publish a release. Installed games pick up the content patch
 # (cinderhold-X.Y.Z.pck + manifest.json) from it without a reinstall.
+#
+# It can also be started by hand (`gh workflow run release.yml --ref main`):
+# that releases the version in version.gd from the chosen commit, moving the
+# tag there and replacing an earlier release of the same version.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -25,9 +30,12 @@ jobs:
         run: |
           v=$(grep -oP 'VERSION := "\K[^"]+' scripts/core/version.gd)
           engine=$(grep -oP 'ENGINE := "\K[^"]+' scripts/core/version.gd)
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME does not match version.gd ($v)"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME does not match version.gd ($v)"; exit 1; }
+          fi
           [ "$engine" = "$GODOT_VERSION" ] || { echo "::error::version.gd ENGINE ($engine) != workflow GODOT_VERSION"; exit 1; }
           echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "TAG=v$v" >> "$GITHUB_ENV"
 
       - name: Install Godot and export templates
         run: |
@@ -94,12 +102,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
-          range=${prev:+$prev..}$GITHUB_REF_NAME
+          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          [ "$prev" = "$TAG" ] && prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
           {
             echo "Installed copies update in-game: Settings → Updates (or the main menu badge)."
             echo
             echo "### Changes"
-            git log --pretty='- %s' "$range"
+            git log --pretty='- %s' "${prev:+$prev..}HEAD"
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Cinderhold $GITHUB_REF_NAME" --notes-file notes.md
+          # A manual re-run replaces the release and points the tag at this commit.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          fi
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "Cinderhold $TAG" --notes-file notes.md
