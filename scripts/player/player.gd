@@ -686,11 +686,12 @@ func receive_weapon(id: String, upgraded: bool, ammo_only: bool) -> void:
 			game.hud.toast("Ammo restocked", Color("e0d0a0"))
 			return
 	var slot := _new_slot(id, upgraded)
+	# A weapon in the forge keeps its slot reserved until it comes back.
+	var reserved := 1 if forge_pending != "" else 0
 	if forge_pending == id and upgraded:
 		forge_pending = ""
-		weapons.append(slot)
-		cur = weapons.size() - 1
-	elif weapons.size() < MAX_SLOTS + (1 if forge_pending != "" else 0) - (1 if forge_pending != "" else 0):
+		reserved = 0
+	if weapons.size() + reserved < MAX_SLOTS:
 		weapons.append(slot)
 		cur = weapons.size() - 1
 	else:
