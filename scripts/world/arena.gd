@@ -87,7 +87,12 @@ var _world_body: StaticBody3D
 var menu_mode := false
 
 
-func build(for_menu := false) -> void:
+## Build the whole outpost. Pass `report(fraction, stage)` to build across
+## several frames behind a loading screen (await it); without one it runs
+## straight through, which tests rely on.
+func build(for_menu := false, report := Callable()) -> void:
+	_report = report
+	_slice_t = Time.get_ticks_msec()
 	menu_mode = for_menu
 	_rng.seed = 90210
 	H = LAYOUT.size()
@@ -102,13 +107,17 @@ func build(for_menu := false) -> void:
 	_world_body.collision_mask = 0
 	add_child(_world_body)
 	var off := OS.get_environment("CINDER_DISABLE").split(",")   # dev bisecting
+	await _step(0.02, "Lighting the braziers…")
 	if not "env" in off:
 		_build_environment()
 	if not "terrain" in off:
-		_build_terrain()
-	_build_props()
+		await _build_terrain()
+	await _step(0.76, "Furnishing the outpost…")
+	await _build_props()
+	await _step(0.9, "Hanging the doors…")
 	_build_doors()
 	_build_interactables()
+	await _step(0.96, "Stirring the ash…")
 	if not "atmosphere" in off:
 		_build_atmosphere()
 	for n in get_children():
@@ -116,6 +125,23 @@ func build(for_menu := false) -> void:
 				or ("labels" in off and n is Label3D):
 			n.queue_free()
 	_recompute_active()
+	await _step(1.0)
+	_report = Callable()
+
+
+var _report := Callable()
+var _slice_t := 0
+
+
+## Report progress and, when building asynchronously, hand the frame back once
+## a slice of work has taken ~25 ms so the loading screen keeps animating.
+func _step(f: float, stage := "") -> void:
+	if not _report.is_valid():
+		return
+	_report.call(f, stage)
+	if Time.get_ticks_msec() - _slice_t > 25:
+		await get_tree().process_frame
+		_slice_t = Time.get_ticks_msec()
 
 
 func _ch(x: int, y: int) -> String:
@@ -210,6 +236,7 @@ func _build_terrain() -> void:
 	var b := VB.new()
 	b.skip_bottom = true
 	for y in H:
+		await _step(0.05 + 0.3 * y / H, "Laying the stones…")
 		for x in W:
 			var ch := _ch(x, y)
 			var is_wall := ch == "#"
@@ -250,7 +277,10 @@ func _build_terrain() -> void:
 		if not buckets.has(key):
 			buckets[key] = []
 		buckets[key].append(p)
+	var done := 0
 	for key in buckets:
+		await _step(0.36 + 0.38 * done / buckets.size(), "Raising the walls…")
+		done += 1
 		var mi := MeshInstance3D.new()
 		mi.mesh = b.build_subset(buckets[key], VS)
 		mi.name = "Chunk_%d_%d" % [key.x, key.y]
@@ -300,6 +330,7 @@ func _place_mesh(mesh: Mesh, pos: Vector3, yaw := 0.0, scale_v := 1.0) -> MeshIn
 func _build_props() -> void:
 	var done := {}
 	for y in H:
+		await _step(0.76 + 0.13 * y / H)
 		for x in W:
 			var ch := _ch(x, y)
 			var c := Vector3(x + 0.5, 0, y + 0.5)
@@ -714,10 +745,24 @@ const NEIGH := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)
 	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
 
 
-func flow_field(target: Vector2i) -> PackedFloat32Array:
-	var dist := PackedFloat32Array()
+## Integer step costs (tenths of a metre) keep every comparison exact.
+const STRAIGHT := 10
+const DIAGONAL := 14
+const UNREACHED := 1 << 30
+const DX := [1, -1, 0, 0, 1, 1, -1, -1]
+const DY := [0, 0, 1, -1, 1, -1, 1, -1]
+
+
+## Distance, in tenths of a metre, from every cell to `target`.
+##
+## Dial's algorithm: Dijkstra with a ring of buckets indexed by distance, so
+## there's no heap and no floating point. The old float version could keep
+## re-queueing equal-length routes forever on some cells, which froze the host
+## whenever a player stepped onto one.
+func flow_field(target: Vector2i) -> PackedInt32Array:
+	var dist := PackedInt32Array()
 	dist.resize(W * H)
-	dist.fill(INF)
+	dist.fill(UNREACHED)
 	if not is_walkable(target):
 		# stand-in: nearest walkable neighbour (a player hugging a crate)
 		for d in NEIGH:
@@ -726,32 +771,63 @@ func flow_field(target: Vector2i) -> PackedFloat32Array:
 				break
 		if not is_walkable(target):
 			return dist
-	var heap: Array = [[0.0, target.x, target.y]]
-	dist[target.y * W + target.x] = 0.0
-	while not heap.is_empty():
-		var top: Array = _heap_pop(heap)
-		var cd: float = top[0]
-		var cx: int = top[1]
-		var cy: int = top[2]
-		if cd > dist[cy * W + cx]:
-			continue
-		for k in 8:
-			var d: Vector2i = NEIGH[k]
-			var nx := cx + d.x
-			var ny := cy + d.y
-			if not is_walkable(Vector2i(nx, ny)):
-				continue
-			if k >= 4 and (not is_walkable(Vector2i(cx + d.x, cy)) or not is_walkable(Vector2i(cx, cy + d.y))):
-				continue
-			var nd := cd + (1.4142 if k >= 4 else 1.0)
-			if nd < dist[ny * W + nx]:
-				dist[ny * W + nx] = nd
-				_heap_push(heap, [nd, nx, ny])
+	var offs := PackedInt32Array([1, -1, W, -W, W + 1, -W + 1, W - 1, -W - 1])
+	var ring: Array = []
+	for i in DIAGONAL + 1:
+		ring.append([])
+	var slots := ring.size()
+	var start := target.y * W + target.x
+	dist[start] = 0
+	ring[0].append(start)
+	var pending := 1
+	var d := 0
+	while pending > 0:
+		var bucket: Array = ring[d % slots]
+		if not bucket.is_empty():
+			ring[d % slots] = []
+			pending -= bucket.size()
+			for idx in bucket:
+				if dist[idx] != d:
+					continue   # already reached by a shorter route
+				var cx: int = idx % W
+				var cy: int = idx / W
+				for k in 8:
+					var dx: int = DX[k]
+					var dy: int = DY[k]
+					var nx := cx + dx
+					var ny := cy + dy
+					if nx < 0 or ny < 0 or nx >= W or ny >= H:
+						continue
+					var n: int = idx + offs[k]
+					if walk[n] == 0:
+						continue
+					if k >= 4 and (walk[idx + dx] == 0 or walk[idx + dy * W] == 0):
+						continue   # no cutting corners
+					var nd := d + (DIAGONAL if k >= 4 else STRAIGHT)
+					if nd < dist[n]:
+						dist[n] = nd
+						ring[nd % slots].append(n)
+						pending += 1
+		d += 1
 	return dist
 
 
+## True if a circle (in the XZ plane) touches no blocked cell.
+func circle_free(c: Vector2, r: float) -> bool:
+	for cy in range(floori(c.y - r), floori(c.y + r) + 1):
+		for cx in range(floori(c.x - r), floori(c.x + r) + 1):
+			if cx >= 0 and cy >= 0 and cx < W and cy < H and walk[cy * W + cx] == 1:
+				continue
+			# nearest point of the blocked cell to the circle's centre
+			var qx := clampf(c.x, cx, cx + 1.0)
+			var qy := clampf(c.y, cy, cy + 1.0)
+			if (c.x - qx) * (c.x - qx) + (c.y - qy) * (c.y - qy) < r * r:
+				return false
+	return true
+
+
 ## The best next cell centre to walk toward on a field from position `p`.
-func flow_step(field: PackedFloat32Array, p: Vector3) -> Vector3:
+func flow_step(field: PackedInt32Array, p: Vector3) -> Vector3:
 	var c := cell_of(p)
 	if not is_walkable(c):
 		# shoved into a prop: head for any walkable neighbour
@@ -775,47 +851,13 @@ func flow_step(field: PackedFloat32Array, p: Vector3) -> Vector3:
 	return cell_center(best)
 
 
-func field_distance(field: PackedFloat32Array, p: Vector3) -> float:
+## Path distance in metres from `p` to the field's target (INF if unreachable).
+func field_distance(field: PackedInt32Array, p: Vector3) -> float:
 	var c := cell_of(p)
 	if c.x < 0 or c.y < 0 or c.x >= W or c.y >= H:
 		return INF
-	return field[c.y * W + c.x]
-
-
-static func _heap_push(h: Array, item: Array) -> void:
-	h.append(item)
-	var i := h.size() - 1
-	while i > 0:
-		var parent := (i - 1) / 2
-		if h[parent][0] <= h[i][0]:
-			break
-		var t = h[parent]
-		h[parent] = h[i]
-		h[i] = t
-		i = parent
-
-
-static func _heap_pop(h: Array) -> Array:
-	var top: Array = h[0]
-	var last: Array = h.pop_back()
-	if not h.is_empty():
-		h[0] = last
-		var i := 0
-		while true:
-			var l := i * 2 + 1
-			var r := l + 1
-			var m := i
-			if l < h.size() and h[l][0] < h[m][0]:
-				m = l
-			if r < h.size() and h[r][0] < h[m][0]:
-				m = r
-			if m == i:
-				break
-			var t = h[m]
-			h[m] = h[i]
-			h[i] = t
-			i = m
-	return top
+	var v := field[c.y * W + c.x]
+	return INF if v >= UNREACHED else v / 10.0
 
 
 # =========================================================================

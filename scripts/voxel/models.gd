@@ -24,7 +24,9 @@ static var _cache := {}
 
 static func cached(key: String, maker: Callable):
 	if not _cache.has(key):
+		var _pt := Time.get_ticks_usec()
 		_cache[key] = maker.call()
+		preload("res://scripts/core/prof.gd").add("model builds", _pt)
 	return _cache[key]
 
 

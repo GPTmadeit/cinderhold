@@ -3,6 +3,7 @@ extends CharacterBody3D
 ## interaction, then streams its state to everyone else at 20 Hz. Remote
 ## copies interpolate that state and animate a third-person voxel model.
 
+const Prof := preload("res://scripts/core/prof.gd")
 const M := preload("res://scripts/voxel/models.gd")
 const W := preload("res://scripts/game/weapons.gd")
 const P := preload("res://scripts/game/perks.gd")
@@ -342,6 +343,13 @@ func add_look(delta: Vector2) -> void:
 # =========================================================================
 
 func _physics_process(dt: float) -> void:
+	var _pt := Time.get_ticks_usec()
+	_physics_process_body(dt)
+	if Prof.on:
+		Prof.add("player", _pt)
+
+
+func _physics_process_body(dt: float) -> void:
 	if not is_local():
 		_remote_update(dt)
 		return
@@ -576,7 +584,8 @@ func _shoot(def: Dictionary, w: Dictionary) -> void:
 		game.hud.hitmarker(any_head)
 		Sfx.play("headshot" if any_head else "hit", -6.0 if not any_head else -2.0, 0.05)
 	Sfx.play(def.sound, -3.0, 0.05)
-	_fx_shot.rpc(_muzzle.global_position, ends, String(def.id))
+	if not Net.solo and game.phase != "loading":
+		_fx_shot.rpc(_muzzle.global_position, ends, String(def.id))
 	_flash_t = 0.05
 	_muzzle_flash.rotation.z = _rng.randf() * TAU
 	# recoil
@@ -951,6 +960,8 @@ func hurt(amount: float, from: Vector3) -> void:
 		return
 	if not is_local() or downed or dead:
 		return
+	if "--godmode" in OS.get_cmdline_user_args():
+		return
 	hp -= amount
 	since_hurt = 0.0
 	hurt_flash = 1.0
@@ -1042,7 +1053,8 @@ func _spectate() -> void:
 
 func _send_state(dt: float) -> void:
 	_state_t -= dt
-	if _state_t > 0.0 or Net.solo:
+	# no state until the match starts: clients may still be loading the map
+	if _state_t > 0.0 or Net.solo or game.phase == "loading":
 		return
 	_state_t = 1.0 / STATE_RATE
 	var flags := int(sprinting) | int(crouching) << 1 | int(downed) << 2 | int(dead) << 3 | int(aiming) << 4 | int(reload_t >= 0.0) << 5

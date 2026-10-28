@@ -3,6 +3,7 @@ extends Node3D
 ## rounds, enemies, points, purchases and power-ups. Each client owns its own
 ## player's movement, health and weapons and reports hits to the host.
 
+const Prof := preload("res://scripts/core/prof.gd")
 const ArenaScript := preload("res://scripts/world/arena.gd")
 const PlayerScript := preload("res://scripts/player/player.gd")
 const EnemyScript := preload("res://scripts/enemy/enemy.gd")
@@ -10,6 +11,7 @@ const HudScript := preload("res://scripts/ui/hud.gd")
 const W := preload("res://scripts/game/weapons.gd")
 const P := preload("res://scripts/game/perks.gd")
 const M := preload("res://scripts/voxel/models.gd")
+const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
 
 const SNAP_RATE := 15.0
 const INTERMISSION := 10.0
@@ -52,11 +54,7 @@ var _check_t := 0.0
 
 func _ready() -> void:
 	_rng.randomize()
-	arena = ArenaScript.new()
-	arena.name = "Arena"
-	add_child(arena)
-	arena.build()
-	arena.door_opened.connect(func(_l): _fields.clear())
+	var ls = LoadingScreen.open(get_tree(), "Preparing the outpost…")
 	players_root = Node3D.new()
 	players_root.name = "Players"
 	add_child(players_root)
@@ -66,6 +64,12 @@ func _ready() -> void:
 	fx_root = Node3D.new()
 	fx_root.name = "FX"
 	add_child(fx_root)
+	arena = ArenaScript.new()
+	arena.name = "Arena"
+	add_child(arena)
+	await arena.build(false, func(f, stage): ls.set_progress(f * 0.62, stage))
+	arena.door_opened.connect(func(_l): _fields.clear())
+	await _warm_models(ls)
 
 	var ids := Net.players.keys()
 	if ids.is_empty():
@@ -82,6 +86,13 @@ func _ready() -> void:
 	add_child(hud)
 	hud.bind(self, local_player)
 
+	await _warm_shaders(ls)
+	while not Sfx.is_ready:   # first launch: sounds may still be synthesising
+		ls.set_progress(0.95 + 0.04 * Sfx.progress(), "Tuning the bells…")
+		await get_tree().process_frame
+	loaded = true
+	ls.close()
+
 	multiplayer.peer_disconnected.connect(_on_peer_left)
 	Net.disconnected.connect(_on_host_lost)
 	Sfx.music("game_music")
@@ -90,6 +101,72 @@ func _ready() -> void:
 		_phase_t = 3.0
 	else:
 		_client_loaded.rpc_id(1)
+
+
+## True once the map, models and shaders are ready and the match can run.
+var loaded := false
+
+
+## Build every enemy, survivor, weapon and power-up model now, behind the
+## loading screen, so the first Runner or Brute of a match doesn't hitch.
+func _warm_models(ls) -> void:
+	var jobs: Array[Callable] = []
+	for v in 5:
+		jobs.append(func(): M.husk("husk", v))
+		jobs.append(func(): M.husk("runner", v))
+	jobs.append(func(): M.brute())
+	for c in Settings.PLAYER_COLORS.size():
+		jobs.append(func(): M.survivor(c))
+	for id in W.DEFS:
+		jobs.append(func(): M.gun(id))
+		jobs.append(func(): M.gun(id, true))
+	for k in POWERUP_KINDS:
+		jobs.append(func(): M.powerup(k))
+	jobs.append(func(): M.arms())
+	for i in jobs.size():
+		jobs[i].call()
+		ls.set_progress(0.62 + 0.16 * (i + 1) / jobs.size(), "Waking the Husks…")
+		await get_tree().process_frame
+
+
+## Draw one of everything in front of the camera for a few frames while the
+## loading screen covers it, so shader pipelines are compiled now instead of
+## mid-fight the first time a Brute, a Cinderbolt or a power-up shows up.
+## (Godot also keeps compiled shaders on disk, so later launches are quicker.)
+func _warm_shaders(ls) -> void:
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var stage := Node3D.new()
+	add_child(stage)
+	stage.global_transform = cam.global_transform * Transform3D(Basis(), Vector3(0, -0.2, -2.5))
+	var meshes: Array = []
+	for part in M.husk("husk", 0).values():
+		meshes.append(part.mesh)
+	meshes.append(M.brute().torso.mesh)
+	meshes.append(M.survivor(0).torso.mesh)
+	for id in W.DEFS:
+		meshes.append(M.gun(id, true))
+	for k in POWERUP_KINDS:
+		meshes.append(M.powerup(k))
+	var x := -1.2
+	for m in meshes:
+		var mi := MeshInstance3D.new()
+		mi.mesh = m
+		mi.position = Vector3(x, 0, 0)
+		mi.scale = Vector3.ONE * 0.3
+		stage.add_child(mi)
+		x += 0.1
+	# effects that bring their own materials
+	if local_player:
+		local_player._impact(stage.global_position, Vector3.UP, true)
+		local_player._impact(stage.global_position + Vector3.RIGHT * 0.3, Vector3.UP)
+		local_player._tracer(stage.global_position - Vector3.RIGHT, stage.global_position + Vector3.RIGHT, true)
+	arena._dust_burst(stage.global_position)
+	for f in 4:
+		ls.set_progress(0.78 + 0.17 * (f + 1) / 4.0, "Warming the shaders…")
+		await get_tree().process_frame
+	stage.queue_free()
 
 
 func _spawn_player(peer: int, pos: Vector3) -> void:
@@ -132,6 +209,15 @@ func _client_loaded() -> void:
 # =========================================================================
 
 func _physics_process(dt: float) -> void:
+	var _pt := Time.get_ticks_usec()
+	_physics_process_body(dt)
+	if Prof.on:
+		Prof.add("game", _pt)
+
+
+func _physics_process_body(dt: float) -> void:
+	if not loaded:
+		return
 	_tick_timers(dt)
 	if not multiplayer.is_server():
 		return
@@ -139,7 +225,7 @@ func _physics_process(dt: float) -> void:
 		"loading":
 			_phase_t -= dt
 			if _phase_t <= 0.0 and (_loaded.size() >= Net.players.size() or _phase_t < -15.0):
-				_start_round(1)
+				_start_round(_dev_start_round())
 		"intermission":
 			_phase_t -= dt
 			if _phase_t <= 0.0:
@@ -180,6 +266,13 @@ func _tick_timers(dt: float) -> void:
 		n.visible = pu.life > 6.0 or fmod(pu.life, 0.4) > 0.15
 		if pu.life <= 0.0 and multiplayer.is_server():
 			_powerup_gone.rpc(id)
+
+
+## Dev: `--start-round N` begins a match at round N (perf testing).
+func _dev_start_round() -> int:
+	var a := OS.get_cmdline_user_args()
+	var i := a.find("--start-round")
+	return maxi(int(a[i + 1]), 1) if i != -1 and i + 1 < a.size() else 1
 
 
 func round_health(r: int) -> float:
@@ -276,12 +369,15 @@ func _pick_vent() -> Dictionary:
 
 @rpc("authority", "reliable", "call_local")
 func _spawn_enemy(id: int, kind: String, variant: int, pos: Vector3, hp: float, tier: int) -> void:
+	var _pt := Time.get_ticks_usec()
 	var e: CharacterBody3D = EnemyScript.new()
 	e.name = "E%d" % id
 	enemies_root.add_child(e)
 	e.setup(self, id, kind, variant, pos, hp, tier)
 	enemies[id] = e
 	Sfx.play_at("spawn", pos, -4.0)
+	if Prof.on:
+		Prof.add("spawn", _pt)
 
 
 func _update_fields() -> void:

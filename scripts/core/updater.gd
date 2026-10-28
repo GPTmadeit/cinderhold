@@ -5,8 +5,9 @@ extends Node
 ## content patch `.pck`. When the release was built with the same engine as
 ## this install, the patch is downloaded to user://updates and mounted by
 ## boot.gd on the next launch. A release that needs a newer engine is offered
-## as a full download instead. The repository is private, so requests carry a
-## read-only GitHub token the player pastes in Settings → Updates.
+## as a full download instead. The repository is public, so no account is
+## needed; an optional token (Settings → Updates) only lifts GitHub's
+## anonymous rate limit.
 
 signal state_changed
 
@@ -34,7 +35,7 @@ func setup() -> void:
 	_http.max_redirects = 0
 	_http.use_threads = true
 	add_child(_http)
-	if bool(Settings.get_v("updates", "auto_check")) and token() != "":
+	if bool(Settings.get_v("updates", "auto_check")):
 		check.call_deferred()
 
 
@@ -54,9 +55,6 @@ func _process(_dt: float) -> void:
 func check() -> void:
 	if _busy:
 		return
-	if token() == "":
-		_set_state(State.NEEDS_TOKEN, "Add a GitHub token in Settings → Updates to check this private repo.")
-		return
 	_busy = true
 	_set_state(State.CHECKING, "Checking GitHub for updates…")
 	await _check()
@@ -65,11 +63,14 @@ func check() -> void:
 
 func _check() -> void:
 	var res := await _http_get(API % V.REPO, true)
-	if res.code == 401 or res.code == 403:
-		_set_state(State.ERROR, "GitHub rejected the token (HTTP %d). Check that it can read %s." % [res.code, V.REPO])
+	if res.code == 401 or (res.code == 403 and token() != ""):
+		_set_state(State.ERROR, "GitHub rejected the token (HTTP %d). Clear it in Settings → Updates or fix its access." % res.code)
+		return
+	if res.code == 403 or res.code == 429:
+		_set_state(State.ERROR, "GitHub is rate-limiting update checks from this network. Try again in a while.")
 		return
 	if res.code == 404:
-		# A private repo answers 404 both for "no releases" and "can't see it".
+		# 404 means "no releases yet", or a repo this token can't see.
 		var repo := await _http_get("https://api.github.com/repos/%s" % V.REPO, true)
 		if repo.code == 200:
 			_set_state(State.UP_TO_DATE, "No releases published yet.")

@@ -3,6 +3,7 @@ extends CharacterBody3D
 ## peer interpolates snapshots. All peers animate the jointed voxel model.
 ## Collision shape 0 is the body, shape 1 is the head (for headshots).
 
+const Prof := preload("res://scripts/core/prof.gd")
 const M := preload("res://scripts/voxel/models.gd")
 
 const STATS := {
@@ -99,12 +100,21 @@ func setup(g: Node, id: int, k: String, variant: int, pos: Vector3, health: floa
 # =========================================================================
 
 func _physics_process(dt: float) -> void:
+	var _pt := Time.get_ticks_usec()
+	_tick(dt)
+	if Prof.on:
+		Prof.add("enemies", _pt)
+
+
+func _tick(dt: float) -> void:
 	if dying:
 		return
 	_animate(dt)
-	_flash = maxf(_flash - dt * 6.0, 0.0)
-	for m in _meshes:
-		m.set_instance_shader_parameter("flash", _flash)
+	if _flash > 0.0 or _flash_sent > 0.0:
+		_flash = maxf(_flash - dt * 6.0, 0.0)
+		_flash_sent = _flash
+		for m in _meshes:
+			m.set_instance_shader_parameter("flash", _flash)
 	_groan_t -= dt
 	if _groan_t <= 0.0:
 		_groan_t = _rng.randf_range(3.0, 7.0)
@@ -116,15 +126,56 @@ func _physics_process(dt: float) -> void:
 		_rise = minf(_rise + dt / 1.1, 1.0)
 		anim = Anim.RISE
 		return
+	# Decide where to go a few times a second (staggered across enemies);
+	# steer, attack and move every tick.
+	_think_t -= dt
+	if _think_t <= 0.0:
+		_think_t = THINK_INTERVAL * _rng.randf_range(0.8, 1.2)
+		_think()
+	_act(dt)
 
+
+const THINK_INTERVAL := 0.12
+
+var _goal := Vector3.ZERO
+var _chase_direct := false
+var _think_t := 0.0
+var _push := Vector3.ZERO
+var _path_dist := INF
+var _flash_sent := 0.0
+
+
+## Pick a target and the next point to walk toward. This is the expensive
+## part (pathing, raycasts, crowd separation), so it runs at ~8 Hz.
+func _think() -> void:
 	var t: Dictionary = game.choose_target(global_position)
+	if t.is_empty():
+		_target = null
+		_path_dist = INF
+		return
+	_target = t.player
+	_path_dist = t.dist
+	var tp: Vector3 = _target.global_position
+	var flat := Vector2(tp.x - global_position.x, tp.z - global_position.z)
+	_chase_direct = flat.length() < 3.5 and _clear_line(tp)
+	if _chase_direct:
+		_goal = tp
+	else:
+		_goal = game.arena.flow_step(t.field, global_position)
+		# look one more step ahead so paths round corners smoothly
+		var ahead: Vector3 = game.arena.flow_step(t.field, _goal)
+		if _clear_line(ahead):
+			_goal = _goal.lerp(ahead, 0.6)
+	_push = _separation()
+
+
+func _act(dt: float) -> void:
 	var desired := Vector3.ZERO
 	var speed := _speed * (1.6 if _enraged else 1.0)
-	if t.is_empty():
-		anim = Anim.IDLE
+	if _target == null or not is_instance_valid(_target):
 		_target = null
+		anim = Anim.IDLE
 	else:
-		_target = t.player
 		var tp: Vector3 = _target.global_position
 		var to := tp - global_position
 		to.y = 0.0
@@ -143,27 +194,18 @@ func _physics_process(dt: float) -> void:
 			Sfx.play_at("husk_attack", global_position + Vector3.UP * 1.5, -2.0)
 		else:
 			anim = Anim.MOVE
-			var goal: Vector3
-			if dist < 3.5 and _clear_line(tp):
-				goal = tp
-			else:
-				goal = game.arena.flow_step(t.field, global_position)
-				# look one more step ahead so paths round corners smoothly
-				var ahead: Vector3 = game.arena.flow_step(t.field, goal)
-				if _clear_line(ahead):
-					goal = goal.lerp(ahead, 0.6)
-			var dir := goal - global_position
+			if _chase_direct:
+				_goal = tp    # close in on where the player is now
+			var dir := _goal - global_position
 			dir.y = 0.0
 			if dist < _stats.reach * 0.8:
 				dir = Vector3.ZERO
-			desired = dir.normalized() * speed + _separation() * 1.4
+			desired = dir.normalized() * speed + _push * 1.4
 	_cooldown -= dt
 
 	var hv := Vector3(velocity.x, 0, velocity.z).lerp(desired, clampf(dt * 8.0, 0.0, 1.0))
-	velocity.x = hv.x
-	velocity.z = hv.z
-	velocity.y = 0.0 if is_on_floor() else velocity.y - 18.0 * dt
-	move_and_slide()
+	velocity = hv
+	_grid_move(dt)
 	move_speed = Vector2(velocity.x, velocity.z).length()
 	if move_speed > 0.2 or (_target and anim == Anim.ATTACK):
 		var face: Vector3 = (_target.global_position - global_position) if (_target and (anim == Anim.ATTACK or global_position.distance_to(_target.global_position) < 3.0)) else velocity
@@ -175,13 +217,36 @@ func _physics_process(dt: float) -> void:
 	# everyone is quietly returned to a vent.
 	_stuck_t += dt
 	if _stuck_t > 5.0:
-		if global_position.distance_to(_last_pos) < 0.8 and (t.is_empty() or t.dist > 6.0):
+		if global_position.distance_to(_last_pos) < 0.8 and _path_dist > 6.0:
 			var vents: Array = game.arena.active_vents()
 			if not vents.is_empty():
 				global_position = vents[_rng.randi() % vents.size()].pos
 				_rise = 0.0
 		_stuck_t = 0.0
 		_last_pos = global_position
+
+
+## Enemies only ever stand on flat floor, and the arena's walkability grid
+## already knows every wall, prop and closed door, so they move against the
+## grid (circle vs cells, one axis at a time) instead of through the physics
+## engine. Their collision shapes stay for bullets and the player.
+func _grid_move(dt: float) -> void:
+	var arena = game.arena
+	var r: float = _stats.radius
+	var p := global_position
+	var stuck_in_wall: bool = not arena.circle_free(Vector2(p.x, p.z), r)
+	var nx := p.x + velocity.x * dt
+	if stuck_in_wall or arena.circle_free(Vector2(nx, p.z), r):
+		p.x = nx
+	else:
+		velocity.x = 0.0
+	var nz := p.z + velocity.z * dt
+	if stuck_in_wall or arena.circle_free(Vector2(p.x, nz), r):
+		p.z = nz
+	else:
+		velocity.z = 0.0
+	p.y = 0.0
+	global_position = p
 
 
 func _clear_line(to: Vector3) -> bool:
@@ -314,6 +379,7 @@ func _parts_base_y(pname: String) -> float:
 ## Instant local feedback for the shooter, before the host confirms.
 func local_hit(point: Vector3, head: bool) -> void:
 	_flash = 1.0
+	_flash_sent = 1.0
 	Sfx.play_at("flesh", point, -2.0)
 	_burst(point, head)
 

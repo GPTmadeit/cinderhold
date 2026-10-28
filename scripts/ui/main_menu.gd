@@ -6,6 +6,7 @@ const T := preload("res://scripts/ui/ui_theme.gd")
 const ArenaScript := preload("res://scripts/world/arena.gd")
 const SettingsPanel := preload("res://scripts/ui/settings_panel.gd")
 const M := preload("res://scripts/voxel/models.gd")
+const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
 
 var _ui: Control
 var _cam: Camera3D
@@ -19,22 +20,21 @@ var _lobby_info: Label
 var _start_btn: Button
 var _ready_btn: Button
 var _update_badge: Button
-var _loading: Control
 var _ip_edit: LineEdit
 
 
 func _ready() -> void:
 	get_tree().paused = false
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	var ls = LoadingScreen.open(get_tree(), "Lighting the braziers…")
 	var arena := ArenaScript.new()
 	add_child(arena)
-	arena.build(true)
+	await arena.build(true, func(f, stage): ls.set_progress(f * 0.85, stage))
 	_cam = Camera3D.new()
 	_cam.fov = 62
 	add_child(_cam)
 	_cam.current = true
 	_pose_husks()
-	Sfx.music("menu_music")
 
 	var layer := CanvasLayer.new()
 	add_child(layer)
@@ -52,16 +52,21 @@ func _ready() -> void:
 	_build_join()
 	_build_lobby()
 	_build_settings()
-	_build_loading()
 	_build_footer()
 
 	Net.roster_changed.connect(_refresh_lobby)
 	Net.connected.connect(func(): _status.text = ""; _show("lobby"))
 	Net.connection_failed.connect(_on_net_error)
 	Net.disconnected.connect(_on_net_error)
-	Net.game_starting.connect(func(): _loading.visible = true)
+	Net.game_starting.connect(func(): LoadingScreen.open(get_tree(), "Preparing the outpost…"))
 	Updater.state_changed.connect(_refresh_badge)
 	_refresh_badge()
+
+	while not Sfx.is_ready:   # first launch: sounds are still being synthesised
+		ls.set_progress(0.85 + 0.14 * Sfx.progress(), "Tuning the bells…")
+		await get_tree().process_frame
+	ls.close()
+	Sfx.music("menu_music")
 
 	if Net.last_message != "":
 		_show("main")
@@ -106,6 +111,8 @@ func _pose_husks() -> void:
 
 
 func _process(dt: float) -> void:
+	if _cam == null:
+		return   # still loading
 	_t += dt
 	var c := Vector3(11.5, 0.0, 21.0)
 	var a := _t * 0.05 + 0.6
@@ -235,34 +242,6 @@ func _build_settings() -> void:
 	box.add_child(sp)
 
 
-func _build_loading() -> void:
-	_loading = ColorRect.new()
-	_loading.color = Color(0.02, 0.015, 0.02, 0.97)
-	_loading.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_loading.visible = false
-	var cc := CenterContainer.new()
-	cc.set_anchors_preset(Control.PRESET_FULL_RECT)
-	var v := VBoxContainer.new()
-	v.alignment = BoxContainer.ALIGNMENT_CENTER
-	var t := T.title("KINDLING THE BRAZIERS", 42)
-	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(t)
-	var tips := [
-		"Headshots are worth more points. Aim for the embers in their eyes.",
-		"Doors open new ground, and new vents for the Husks to crawl out of.",
-		"The Ember Forge doubles a weapon's bite. It costs 5000 points.",
-		"Downed allies bleed out in 35 seconds. Hold Interact to revive them.",
-		"Brutes enrage when wounded. Keep your distance.",
-		"The Relic Cache can grant the Cinderbolt. Feeling lucky?",
-	]
-	var tip := T.label(tips[randi() % tips.size()], 22, T.MUTED)
-	tip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	v.add_child(tip)
-	cc.add_child(v)
-	_loading.add_child(cc)
-	_ui.add_child(_loading)
-
-
 func _build_footer() -> void:
 	var f := T.label("v%s  ·  port %d" % [Updater.current_version(), Net.port()], 18, Color(1, 1, 1, 0.35))
 	f.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
@@ -275,7 +254,7 @@ func _build_footer() -> void:
 
 func _play_solo() -> void:
 	Net.start_solo()
-	_loading.visible = true
+	LoadingScreen.open(get_tree(), "Preparing the outpost…")
 	await get_tree().process_frame
 	await get_tree().process_frame
 	get_tree().change_scene_to_file("res://scenes/game.tscn")

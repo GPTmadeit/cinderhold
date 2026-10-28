@@ -13,7 +13,7 @@
 
 ### Updating
 
-Installed copies update themselves. Open **Settings → Updates**, or click the badge on the main menu, then **Download update** and **Restart**. The repository is private, so each install needs a GitHub token with read access to it, pasted into Settings → Updates once. A full download is only needed when a release changes the game engine, and the game says so when that happens.
+Installed copies update themselves. Open **Settings → Updates**, or click the badge on the main menu, then **Download update** and **Restart**. No account or token is needed. A full download is only needed when a release changes the game engine, and the game says so when that happens.
 
 ### Playing together
 

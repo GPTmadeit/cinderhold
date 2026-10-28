@@ -14,8 +14,27 @@ var _samples := 0
 var _host_wants := 0
 
 
+class Bracket extends Node:
+	var first := true
+	func _physics_process(_dt: float) -> void:
+		if first:
+			set_meta("t0", Time.get_ticks_usec())
+		else:
+			var t0: int = get_parent().get_node("BracketFirst").get_meta("t0", 0)
+			preload("res://scripts/core/prof.gd").add("ALL node callbacks", t0)
+
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	if "--prof" in OS.get_cmdline_user_args():
+		var a := Bracket.new()
+		a.name = "BracketFirst"
+		a.process_physics_priority = -100000
+		add_child(a)
+		var b := Bracket.new()
+		b.first = false
+		b.process_physics_priority = 100000
+		add_child(b)
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--shot")
 	if i != -1 and i + 2 < args.size():
@@ -47,6 +66,8 @@ func _dev_ui() -> void:
 	var i := args.find("--ui")
 	if _ui_done or i == -1 or i + 1 >= args.size() or _t < 1.5:
 		return
+	if get_tree().root.get_node_or_null("LoadingScreen"):
+		return   # wait until the scene has finished loading
 	_ui_done = true
 	var which := args[i + 1]
 	var scene := get_tree().current_scene
@@ -64,9 +85,41 @@ func _dev_ui() -> void:
 				{"name": "Mara", "color": 1, "points": 7310, "kills": 52, "headshots": 30, "downs": 2, "revives": 1}])
 
 
+var _plog_t := 0.0
+var _plog_sum := 0.0
+var _plog_max := 0.0
+var _plog_n := 0
+
+
+## --perf: print physics-frame cost every 3 s in any scene.
+func _perf_log(dt: float) -> void:
+	if not "--perf" in OS.get_cmdline_user_args():
+		return
+	var ph := Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+	_plog_sum += ph
+	_plog_max = maxf(_plog_max, ph)
+	_plog_n += 1
+	_plog_t += dt
+	if _plog_t >= 3.0:
+		var scene := get_tree().current_scene
+		var alive: int = scene.enemies.size() if scene and "enemies" in scene else 0
+		print("PERFLOG physics avg %.2f ms max %.2f ms over %d frames, %d enemies" % [_plog_sum / _plog_n, _plog_max, _plog_n, alive])
+		var prof: Dictionary = preload("res://scripts/core/prof.gd").take()
+		if not prof.is_empty():
+			var parts := []
+			for k in prof:
+				parts.append("%s %.2f" % [k, prof[k] / 1000.0 / maxi(_plog_n, 1)])
+			print("  PROF ms/frame: ", ", ".join(parts))
+		_plog_t = 0.0
+		_plog_sum = 0.0
+		_plog_max = 0.0
+		_plog_n = 0
+
+
 func _process(dt: float) -> void:
 	_t += dt
 	_dev_ui()
+	_perf_log(dt)
 	if _t > 3.0:
 		_frames += 1
 		if _fps_secs > 0.0:
@@ -116,6 +169,12 @@ var _bot_log_t := 0.0
 var _bot_steps := {}
 var _bot_fire_toggle := false
 var bot_active := false
+var _bot_move_t := 0.0
+var _bot_dir := 1
+var _win_phys_max := 0.0
+var _win_proc_max := 0.0
+var _win_phys_sum := 0.0
+var _win_n := 0
 
 
 func _enter_tree() -> void:
@@ -163,10 +222,30 @@ func _physics_process(dt: float) -> void:
 		var w: Dictionary = p.weapon()
 		game.request("forge", "forge", [w.id, w.upgraded]))
 	_bot_aim_and_fire(game, p)
+	_bot_strafe(dt)
 	_bot_tick_log(dt, game, p)
 
 
+## --bot-move: strafe back and forth so the player keeps changing cells.
+func _bot_strafe(dt: float) -> void:
+	if not "--bot-move" in OS.get_cmdline_user_args():
+		return
+	_bot_move_t -= dt
+	if _bot_move_t <= 0.0:
+		_bot_move_t = 1.6
+		_bot_dir = -_bot_dir
+		Input.action_release("move_left")
+		Input.action_release("move_right")
+		Input.action_press("move_right" if _bot_dir > 0 else "move_left")
+
+
 func _bot_tick_log(dt: float, game: Node, p: Node) -> void:
+	var ph := Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+	var pr := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	_win_phys_max = maxf(_win_phys_max, ph)
+	_win_proc_max = maxf(_win_proc_max, pr)
+	_win_phys_sum += ph
+	_win_n += 1
 	_bot_log_t -= dt
 	if _bot_log_t <= 0.0:
 		_bot_log_t = 3.0
@@ -226,6 +305,24 @@ func _bot_report(game: Node, p: Node) -> void:
 		if o != p:
 			others.append("%s@(%.1f,%.1f)" % [o.display_name, o.global_position.x, o.global_position.z])
 	print("BOT[%s] others=%s" % ["host" if multiplayer.is_server() else "client", ",".join(others)])
+	print("PERF round=%d alive=%d nodes=%d objects=%d physics avg %.2f ms max %.2f ms | process max %.2f ms" % [
+		game.round_num, game.enemies.size(), Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
+		Performance.get_monitor(Performance.OBJECT_COUNT), _win_phys_sum / maxi(_win_n, 1), _win_phys_max, _win_proc_max])
+	var prof: Dictionary = preload("res://scripts/core/prof.gd").take()
+	if not prof.is_empty():
+		var parts := []
+		for k in prof:
+			parts.append("%s %.2f" % [k, prof[k] / 1000.0 / maxi(_win_n, 1)])
+		print("PROF ms/frame: ", ", ".join(parts))
+		print("PHYS active=%d pairs=%d islands=%d | audio3d playing=%d" % [
+			Performance.get_monitor(Performance.PHYSICS_3D_ACTIVE_OBJECTS),
+			Performance.get_monitor(Performance.PHYSICS_3D_COLLISION_PAIRS),
+			Performance.get_monitor(Performance.PHYSICS_3D_ISLAND_COUNT),
+			get_tree().root.find_children("*", "AudioStreamPlayer3D", true, false).filter(func(a): return a.playing).size()])
+	_win_phys_max = 0.0
+	_win_proc_max = 0.0
+	_win_phys_sum = 0.0
+	_win_n = 0
 	print("BOT t=%.0f round=%d phase=%s alive=%d pts=%d kills=%d hs=%d hp=%.0f/%.0f down=%s weapon=%s%s %s/%s perks=%s doors=%s" % [
 		_bot_t, game.round_num, game.phase, game.enemies.size(), game.points.get(p.peer_id, 0),
 		s.get("kills", 0), s.get("headshots", 0), p.hp, p.max_hp, p.downed,

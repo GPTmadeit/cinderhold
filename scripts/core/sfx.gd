@@ -1,6 +1,10 @@
 extends Node
 ## Procedurally synthesised sound effects and music. Nothing is loaded from
-## disk: every sound is generated once in setup().
+## disk: every sound is generated once, on a worker thread started by setup(),
+## so the game can draw its loading screen meanwhile. Sounds requested before
+## synthesis finishes are skipped; requested music starts when it's ready.
+
+signal loaded
 
 const RATE := 22050
 const POOL_3D := 24
@@ -13,6 +17,11 @@ var _i3 := 0
 var _i2 := 0
 var _music: AudioStreamPlayer
 var _rng := RandomNumberGenerator.new()
+var is_ready := false
+var _task := -1
+var _pending := {}
+var _made := 0
+var _want_music := ""
 
 
 func setup() -> void:
@@ -33,7 +42,24 @@ func setup() -> void:
 	_music = AudioStreamPlayer.new()
 	_music.bus = "Music"
 	add_child(_music)
-	_generate()
+	_task = WorkerThreadPool.add_task(_generate, false, "Cinderhold sound synthesis")
+
+
+## 0..1, for loading screens.
+func progress() -> float:
+	return 1.0 if is_ready else clampf(float(_made) / SOUND_COUNT, 0.0, 0.99)
+
+
+func _process(_dt: float) -> void:
+	if _task != -1 and WorkerThreadPool.is_task_completed(_task):
+		WorkerThreadPool.wait_for_task_completion(_task)
+		_task = -1
+		streams = _pending
+		_pending = {}
+		is_ready = true
+		loaded.emit()
+		if _want_music != "":
+			music(_want_music)
 
 
 func play(sound: String, vol_db := 0.0, pitch_var := 0.04) -> void:
@@ -60,6 +86,9 @@ func play_at(sound: String, pos: Vector3, vol_db := 0.0, pitch_var := 0.06) -> v
 
 
 func music(track: String) -> void:
+	_want_music = track
+	if not is_ready:
+		return
 	if track == "":
 		_music.stop()
 		return
@@ -193,50 +222,58 @@ func _chord(notes: Array, dur: float, wave := "tri", decay := 0.6, gain := 0.25,
 	return out
 
 
+const SOUND_COUNT := 44
+
+
+func _put(sound: String, stream: AudioStreamWAV) -> void:
+	_pending[sound] = stream
+	_made += 1
+
+
 func _generate() -> void:
-	streams.pistol = _wav(_shot(0.45, 7000, 0.05, 140, 0.25))
-	streams.smg = _wav(_shot(0.3, 9000, 0.035, 170, 0.2, 0.75))
-	streams.rifle = _wav(_shot(0.6, 6000, 0.06, 105, 0.35))
-	streams.shotgun = _wav(_shot(0.9, 4200, 0.11, 70, 0.6, 1.1))
-	streams.lmg = _wav(_shot(0.55, 5200, 0.06, 90, 0.35, 0.95))
-	streams.sniper = _wav(_shot(1.3, 5000, 0.12, 60, 0.7, 1.2))
+	_put("pistol", _wav(_shot(0.45, 7000, 0.05, 140, 0.25)))
+	_put("smg", _wav(_shot(0.3, 9000, 0.035, 170, 0.2, 0.75)))
+	_put("rifle", _wav(_shot(0.6, 6000, 0.06, 105, 0.35)))
+	_put("shotgun", _wav(_shot(0.9, 4200, 0.11, 70, 0.6, 1.1)))
+	_put("lmg", _wav(_shot(0.55, 5200, 0.06, 90, 0.35, 0.95)))
+	_put("sniper", _wav(_shot(1.3, 5000, 0.12, 60, 0.7, 1.2)))
 	var zap := _tone(0.5, 1800, 220, "saw", 0.002, 0.12, 0.35)
-	streams.bolt = _wav(_mix(zap, _noise(0.5, 9000, 0.001, 0.1, 0.4, true)))
-	streams.empty = _wav(_noise(0.05, 8000, 0.0005, 0.008, 0.5, true))
-	streams.mag_out = _wav(_seq([[_noise(0.08, 3000, 0.001, 0.02, 0.6, true), 0.0], [_tone(0.1, 900, 700, "square", 0.001, 0.015, 0.15), 0.01]]))
-	streams.mag_in = _wav(_seq([[_noise(0.1, 2500, 0.001, 0.025, 0.8, true), 0.0], [_tone(0.08, 1300, 1100, "square", 0.001, 0.01, 0.2), 0.02], [_noise(0.06, 5000, 0.001, 0.01, 0.5, true), 0.09]]))
-	streams.rack = _wav(_seq([[_noise(0.1, 2000, 0.001, 0.03, 0.8, true), 0.0], [_noise(0.12, 2600, 0.001, 0.03, 0.9, true), 0.14]]))
-	streams.hit = _wav(_tone(0.06, 2400, 2000, "tri", 0.001, 0.02, 0.5))
-	streams.headshot = _wav(_mix(_tone(0.25, 3200, 3100, "sine", 0.001, 0.07, 0.45), _tone(0.25, 4800, 4800, "sine", 0.001, 0.05, 0.2)))
-	streams.flesh = _wav(_noise(0.12, 900, 0.001, 0.04, 0.9))
-	streams.melee = _wav(_noise(0.25, 1800, 0.03, 0.06, 0.6, true))
-	streams.melee_hit = _wav(_mix(_noise(0.2, 700, 0.001, 0.05, 1.0), _tone(0.2, 120, 60, "sine", 0.001, 0.05, 0.6)))
+	_put("bolt", _wav(_mix(zap, _noise(0.5, 9000, 0.001, 0.1, 0.4, true))))
+	_put("empty", _wav(_noise(0.05, 8000, 0.0005, 0.008, 0.5, true)))
+	_put("mag_out", _wav(_seq([[_noise(0.08, 3000, 0.001, 0.02, 0.6, true), 0.0], [_tone(0.1, 900, 700, "square", 0.001, 0.015, 0.15), 0.01]])))
+	_put("mag_in", _wav(_seq([[_noise(0.1, 2500, 0.001, 0.025, 0.8, true), 0.0], [_tone(0.08, 1300, 1100, "square", 0.001, 0.01, 0.2), 0.02], [_noise(0.06, 5000, 0.001, 0.01, 0.5, true), 0.09]])))
+	_put("rack", _wav(_seq([[_noise(0.1, 2000, 0.001, 0.03, 0.8, true), 0.0], [_noise(0.12, 2600, 0.001, 0.03, 0.9, true), 0.14]])))
+	_put("hit", _wav(_tone(0.06, 2400, 2000, "tri", 0.001, 0.02, 0.5)))
+	_put("headshot", _wav(_mix(_tone(0.25, 3200, 3100, "sine", 0.001, 0.07, 0.45), _tone(0.25, 4800, 4800, "sine", 0.001, 0.05, 0.2))))
+	_put("flesh", _wav(_noise(0.12, 900, 0.001, 0.04, 0.9)))
+	_put("melee", _wav(_noise(0.25, 1800, 0.03, 0.06, 0.6, true)))
+	_put("melee_hit", _wav(_mix(_noise(0.2, 700, 0.001, 0.05, 1.0), _tone(0.2, 120, 60, "sine", 0.001, 0.05, 0.6))))
 	for i in 4:
-		streams["groan%d" % i] = _wav(_groan(_rng.randf_range(0.8, 1.6), _rng.randf_range(70, 120), 0.35))
-	streams.husk_attack = _wav(_groan(0.5, 140, 0.6, 0.8))
-	streams.husk_die = _wav(_mix(_groan(0.9, 90, 0.5, 0.7), _noise(0.4, 600, 0.01, 0.15, 0.4)))
-	streams.brute_roar = _wav(_groan(1.8, 45, 0.7, 0.95))
-	streams.hurt = _wav(_mix(_noise(0.3, 500, 0.001, 0.08, 0.9), _tone(0.3, 180, 90, "sine", 0.001, 0.08, 0.5)))
-	streams.buy = _wav(_chord([880, 1318.5], 0.5, "tri", 0.25, 0.22, 0.07))
-	streams.deny = _wav(_tone(0.3, 160, 140, "square", 0.002, 0.12, 0.18))
-	streams.door = _wav(_seq([[_noise(1.6, 300, 0.05, 0.6, 0.9), 0.0], [_tone(1.4, 55, 40, "saw", 0.05, 0.5, 0.3), 0.0], [_noise(0.3, 2000, 0.001, 0.08, 0.5, true), 0.9]]))
-	streams.round_start = _wav(_seq([[_tone(2.8, 98, 96, "saw", 0.3, 1.2, 0.25), 0.0], [_tone(2.8, 147, 146, "saw", 0.3, 1.2, 0.18), 0.0], [_tone(2.4, 196, 190, "tri", 0.2, 0.9, 0.2), 0.5], [_noise(2.5, 200, 0.4, 1.0, 0.4), 0.0]]))
-	streams.round_end = _wav(_seq([[_chord([220, 277.2, 329.6], 2.5, "tri", 1.0, 0.18, 0.12), 0.0], [_chord([246.9, 329.6, 392], 2.5, "tri", 1.2, 0.16, 0.12), 0.7]]))
-	streams.powerup_spawn = _wav(_seq([[_tone(0.6, 600, 1200, "sine", 0.01, 0.3, 0.3), 0.0], [_tone(0.6, 900, 1800, "sine", 0.01, 0.3, 0.2), 0.08]]))
-	streams.powerup = _wav(_chord([523.3, 659.3, 784, 1046.5], 0.9, "tri", 0.35, 0.22, 0.06))
-	streams.step0 = _wav(_noise(0.12, 600, 0.002, 0.03, 0.35))
-	streams.step1 = _wav(_noise(0.12, 750, 0.002, 0.028, 0.35))
-	streams.revive = _wav(_chord([392, 493.9, 587.3, 784], 1.2, "sine", 0.5, 0.2, 0.1))
-	streams.downed = _wav(_seq([[_tone(1.6, 220, 80, "saw", 0.01, 0.8, 0.25), 0.0], [_noise(1.0, 400, 0.01, 0.5, 0.4), 0.0]]))
-	streams.cache = _wav(_chord([659.3, 784, 987.8, 1174.7, 1318.5, 1568, 1975.5], 2.0, "sine", 0.4, 0.16, 0.18))
-	streams.forge = _wav(_seq([[_tone(1.5, 1180, 1170, "sine", 0.001, 0.5, 0.35), 0.0], [_tone(1.5, 1770, 1760, "sine", 0.001, 0.35, 0.18), 0.0], [_noise(0.2, 3000, 0.001, 0.03, 0.8, true), 0.0], [_noise(1.2, 400, 0.05, 0.4, 0.5), 0.1]]))
-	streams.drink = _wav(_seq([[_noise(0.15, 500, 0.01, 0.05, 0.6), 0.0], [_noise(0.15, 500, 0.01, 0.05, 0.6), 0.22], [_noise(0.15, 500, 0.01, 0.05, 0.6), 0.44], [_chord([587.3, 880], 0.8, "sine", 0.3, 0.2, 0.05), 0.7]]))
-	streams.explode = _wav(_seq([[_noise(2.0, 900, 0.002, 0.5, 1.2), 0.0], [_tone(1.5, 80, 30, "sine", 0.002, 0.4, 0.9), 0.0]]))
-	streams.ui_hover = _wav(_tone(0.04, 1800, 1700, "sine", 0.001, 0.012, 0.15))
-	streams.ui_click = _wav(_mix(_tone(0.08, 900, 600, "tri", 0.001, 0.025, 0.35), _noise(0.03, 5000, 0.001, 0.006, 0.3, true)))
-	streams.spawn = _wav(_seq([[_noise(1.0, 250, 0.2, 0.3, 0.7), 0.0], [_noise(0.5, 1500, 0.01, 0.1, 0.25, true), 0.2]]))
-	streams.menu_music = _wav(_drone(16.0, [55.0, 82.4, 110.0, 164.8], 0.5), true)
-	streams.game_music = _wav(_drone(16.0, [41.2, 61.7, 82.4, 123.5, 155.6], 0.8), true)
+		_put("groan%d" % i, _wav(_groan(_rng.randf_range(0.8, 1.6), _rng.randf_range(70, 120), 0.35)))
+	_put("husk_attack", _wav(_groan(0.5, 140, 0.6, 0.8)))
+	_put("husk_die", _wav(_mix(_groan(0.9, 90, 0.5, 0.7), _noise(0.4, 600, 0.01, 0.15, 0.4))))
+	_put("brute_roar", _wav(_groan(1.8, 45, 0.7, 0.95)))
+	_put("hurt", _wav(_mix(_noise(0.3, 500, 0.001, 0.08, 0.9), _tone(0.3, 180, 90, "sine", 0.001, 0.08, 0.5))))
+	_put("buy", _wav(_chord([880, 1318.5], 0.5, "tri", 0.25, 0.22, 0.07)))
+	_put("deny", _wav(_tone(0.3, 160, 140, "square", 0.002, 0.12, 0.18)))
+	_put("door", _wav(_seq([[_noise(1.6, 300, 0.05, 0.6, 0.9), 0.0], [_tone(1.4, 55, 40, "saw", 0.05, 0.5, 0.3), 0.0], [_noise(0.3, 2000, 0.001, 0.08, 0.5, true), 0.9]])))
+	_put("round_start", _wav(_seq([[_tone(2.8, 98, 96, "saw", 0.3, 1.2, 0.25), 0.0], [_tone(2.8, 147, 146, "saw", 0.3, 1.2, 0.18), 0.0], [_tone(2.4, 196, 190, "tri", 0.2, 0.9, 0.2), 0.5], [_noise(2.5, 200, 0.4, 1.0, 0.4), 0.0]])))
+	_put("round_end", _wav(_seq([[_chord([220, 277.2, 329.6], 2.5, "tri", 1.0, 0.18, 0.12), 0.0], [_chord([246.9, 329.6, 392], 2.5, "tri", 1.2, 0.16, 0.12), 0.7]])))
+	_put("powerup_spawn", _wav(_seq([[_tone(0.6, 600, 1200, "sine", 0.01, 0.3, 0.3), 0.0], [_tone(0.6, 900, 1800, "sine", 0.01, 0.3, 0.2), 0.08]])))
+	_put("powerup", _wav(_chord([523.3, 659.3, 784, 1046.5], 0.9, "tri", 0.35, 0.22, 0.06)))
+	_put("step0", _wav(_noise(0.12, 600, 0.002, 0.03, 0.35)))
+	_put("step1", _wav(_noise(0.12, 750, 0.002, 0.028, 0.35)))
+	_put("revive", _wav(_chord([392, 493.9, 587.3, 784], 1.2, "sine", 0.5, 0.2, 0.1)))
+	_put("downed", _wav(_seq([[_tone(1.6, 220, 80, "saw", 0.01, 0.8, 0.25), 0.0], [_noise(1.0, 400, 0.01, 0.5, 0.4), 0.0]])))
+	_put("cache", _wav(_chord([659.3, 784, 987.8, 1174.7, 1318.5, 1568, 1975.5], 2.0, "sine", 0.4, 0.16, 0.18)))
+	_put("forge", _wav(_seq([[_tone(1.5, 1180, 1170, "sine", 0.001, 0.5, 0.35), 0.0], [_tone(1.5, 1770, 1760, "sine", 0.001, 0.35, 0.18), 0.0], [_noise(0.2, 3000, 0.001, 0.03, 0.8, true), 0.0], [_noise(1.2, 400, 0.05, 0.4, 0.5), 0.1]])))
+	_put("drink", _wav(_seq([[_noise(0.15, 500, 0.01, 0.05, 0.6), 0.0], [_noise(0.15, 500, 0.01, 0.05, 0.6), 0.22], [_noise(0.15, 500, 0.01, 0.05, 0.6), 0.44], [_chord([587.3, 880], 0.8, "sine", 0.3, 0.2, 0.05), 0.7]])))
+	_put("explode", _wav(_seq([[_noise(2.0, 900, 0.002, 0.5, 1.2), 0.0], [_tone(1.5, 80, 30, "sine", 0.002, 0.4, 0.9), 0.0]])))
+	_put("ui_hover", _wav(_tone(0.04, 1800, 1700, "sine", 0.001, 0.012, 0.15)))
+	_put("ui_click", _wav(_mix(_tone(0.08, 900, 600, "tri", 0.001, 0.025, 0.35), _noise(0.03, 5000, 0.001, 0.006, 0.3, true))))
+	_put("spawn", _wav(_seq([[_noise(1.0, 250, 0.2, 0.3, 0.7), 0.0], [_noise(0.5, 1500, 0.01, 0.1, 0.25, true), 0.2]])))
+	_put("menu_music", _wav(_drone(16.0, [55.0, 82.4, 110.0, 164.8], 0.5), true))
+	_put("game_music", _wav(_drone(16.0, [41.2, 61.7, 82.4, 123.5, 155.6], 0.8), true))
 
 
 ## Dark ambient loop: detuned filtered saws with slow swells and a heartbeat.

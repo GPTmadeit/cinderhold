@@ -213,11 +213,11 @@ func _updates_tab() -> void:
 	v.add_child(row)
 	var token := LineEdit.new()
 	token.secret = true
-	token.placeholder_text = "github_pat_…  (read-only access to this repository)"
+	token.placeholder_text = "Optional: github_pat_…"
 	token.text = str(Settings.get_v("updates", "token"))
 	token.text_changed.connect(func(t): Settings.set_v("updates", "token", t.strip_edges()))
-	_row(v, "GitHub access token", token)
-	v.add_child(T.label("The repository is private, so each install needs a fine-grained token with \"Contents: read\" on GPTmadeit/cinderhold. It's stored only on this device.", 17, T.MUTED))
+	_row(v, "GitHub token (optional)", token)
+	v.add_child(T.label("Not needed: updates come from the public GitHub releases. A token only helps if GitHub rate-limits your network. It's stored only on this device.", 17, T.MUTED))
 	_row(v, "Check on startup", _check("updates", "auto_check"))
 	var revert := T.button("Remove installed patch", func(): Updater.revert_patch(), 280)
 	revert.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN

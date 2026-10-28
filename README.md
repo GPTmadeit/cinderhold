@@ -17,11 +17,7 @@ Default keys: WASD, mouse, `Shift` sprint, `C` crouch, `Space` jump, `R` reload,
 
 Installed copies update themselves from this repository's releases. Each release includes a small content patch (`cinderhold-X.Y.Z.pck` and `manifest.json`). The game downloads the patch, checks its SHA-256 and applies it on the next launch. A full download is only needed when a release moves to a new Godot engine version, and the game says so when that happens.
 
-The repository is private, so each install needs a GitHub token to read releases:
-
-1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new) with access to **only** `GPTmadeit/cinderhold` and the permission **Contents: Read-only**.
-2. In the game, open **Settings → Updates** and paste it. The token is stored only on that device.
-3. Click **Check for updates**. It also checks on startup, and the main menu shows a badge when an update is available.
+No account or token is needed. **Settings → Updates** has the controls, and the main menu shows a badge when an update is available. A GitHub token can be pasted there if GitHub ever rate-limits update checks from your network, but it's optional.
 
 ## Releasing
 

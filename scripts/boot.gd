@@ -64,7 +64,7 @@ func _dev_flags(args: PackedStringArray) -> void:
 		# benchmark: don't let a hidden, throttled window idle the GPU
 		get_node("/root/Settings").data.video.vsync = false
 		get_node("/root/Settings").apply_video()
-	if "--shot" in args or "--fps-log" in args or "--bot" in args or "--host" in args or "--ui" in args:
+	if "--shot" in args or "--fps-log" in args or "--bot" in args or "--host" in args or "--ui" in args or "--perf" in args:
 		# loaded at runtime so a broken dev script can never stop a normal launch
 		var d: Node = load("res://scripts/core/dev_tools.gd").new()
 		get_tree().root.add_child.call_deferred(d)

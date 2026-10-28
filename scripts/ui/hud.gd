@@ -514,11 +514,11 @@ func _process(dt: float) -> void:
 	else:
 		var def := W.get_def(w.id, w.upgraded)
 		_weapon_lbl.text = def.name
-		_weapon_lbl.add_theme_color_override("font_color", T.EMBER if w.upgraded else T.EMBER_SOFT)
+		_tint(_weapon_lbl, T.EMBER if w.upgraded else T.EMBER_SOFT)
 		_ammo_lbl.text = str(w.mag)
 		_reserve_lbl.text = " / %d" % w.reserve
 		var low: bool = w.mag <= int(ceil(def.mag * 0.25))
-		_ammo_lbl.add_theme_color_override("font_color", Color("ff7a5a") if w.mag == 0 else (Color("ffb070") if low else T.TEXT))
+		_tint(_ammo_lbl, Color("ff7a5a") if w.mag == 0 else (Color("ffb070") if low else T.TEXT))
 		if player.reload_t >= 0.0:
 			_ammo_warn.text = "RELOADING"
 		elif w.mag == 0 and w.reserve == 0:
@@ -532,7 +532,7 @@ func _process(dt: float) -> void:
 
 	_prompt.text = player.prompt
 	var cash := int(game.points.get(player.peer_id, 0))
-	_prompt.add_theme_color_override("font_color", Color("ff9a8a") if player.prompt_cost > cash else T.TEXT)
+	_tint(_prompt, Color("ff9a8a") if player.prompt_cost > cash else T.TEXT)
 	_revive_bar.visible = player.revive_progress > 0.0
 	_revive_bar.value = player.revive_progress
 
@@ -562,6 +562,13 @@ func _process(dt: float) -> void:
 	_scoreboard.visible = Input.is_action_pressed("scoreboard") and not menu_open()
 	if _scoreboard.visible:
 		_fill_scoreboard()
+
+
+## Theme overrides re-layout the label, so only touch them on a change.
+func _tint(l: Label, c: Color) -> void:
+	if l.get_meta("tint", Color(0, 0, 0, 0)) != c:
+		l.set_meta("tint", c)
+		l.add_theme_color_override("font_color", c)
 
 
 func _update_points() -> void:
