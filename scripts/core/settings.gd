@@ -106,7 +106,12 @@ func player_name() -> String:
 ## False during scripted dev runs (--shot / --fps-log) so a test window never grabs the mouse.
 func can_capture_mouse() -> bool:
 	var a := OS.get_cmdline_user_args()
-	return not ("--shot" in a or "--fps-log" in a)
+	return not ("--shot" in a or "--fps-log" in a or "--bot" in a)
+
+
+## A scripted bot is driving the local player (dev smoke tests).
+func bot_driving() -> bool:
+	return "--bot" in OS.get_cmdline_user_args()
 
 
 func use_touch() -> bool:

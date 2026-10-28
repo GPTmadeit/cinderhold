@@ -346,7 +346,7 @@ func _physics_process(dt: float) -> void:
 		_remote_update(dt)
 		return
 	# scripted dev runs ignore live input so a test window can't be played by accident
-	var menu: bool = game.hud.menu_open() or not Settings.can_capture_mouse()
+	var menu: bool = game.hud.menu_open() or (not Settings.can_capture_mouse() and not Settings.bot_driving())
 	if dead:
 		_spectate()
 		_send_state(dt)

@@ -43,7 +43,9 @@ func host() -> Error:
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(port(), MAX_PLAYERS - 1)
 	if err != OK:
+		print("Net: couldn't host on %d: %s" % [port(), error_string(err)])
 		return err
+	print("Net: hosting on UDP %d" % port())
 	peer.host.compress(ENetConnection.COMPRESS_RANGE_CODER)
 	multiplayer.multiplayer_peer = peer
 	solo = false
@@ -57,7 +59,9 @@ func join(address: String) -> Error:
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(address, port())
 	if err != OK:
+		print("Net: couldn't connect to %s: %s" % [address, error_string(err)])
 		return err
+	print("Net: connecting to %s:%d" % [address, port()])
 	peer.host.compress(ENetConnection.COMPRESS_RANGE_CODER)
 	multiplayer.multiplayer_peer = peer
 	solo = false
@@ -101,12 +105,13 @@ func local_addresses() -> PackedStringArray:
 # --- lobby protocol -----------------------------------------------------
 
 func _on_connected() -> void:
+	print("Net: connected to host, registering")
 	_register.rpc_id(1, Settings.player_name(), int(Settings.get_v("player", "color")), V.VERSION)
 	connected.emit()
 
 
-func _on_peer_connected(_id: int) -> void:
-	pass
+func _on_peer_connected(id: int) -> void:
+	print("Net: peer %d connected" % id)
 
 
 func _on_peer_disconnected(id: int) -> void:
@@ -131,6 +136,7 @@ func _register(pname: String, color: int, version: String) -> void:
 		_kick.rpc_id(id, "The lobby is full.")
 		return
 	players[id] = {"name": pname.strip_edges().substr(0, 16), "color": _free_color(color), "ready": false}
+	print("Net: %s joined as peer %d" % [pname, id])
 	_sync_roster.rpc(players)
 	roster_changed.emit()
 
@@ -190,6 +196,7 @@ func start_game() -> void:
 
 @rpc("authority", "reliable", "call_local")
 func _begin(roster: Dictionary) -> void:
+	print("Net: match starting with %d players" % roster.size())
 	players = roster
 	in_game = true
 	game_starting.emit()

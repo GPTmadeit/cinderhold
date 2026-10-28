@@ -39,6 +39,12 @@ func _ready() -> void:
 		get_tree().quit()
 		return
 	_dev_flags(args)
+	var host_i := args.find("--host")
+	var join_i := args.find("--join")
+	if host_i != -1:
+		get_node("/root/Net").host()   # dev_tools starts the match once enough players join
+	elif join_i != -1 and join_i + 1 < args.size():
+		get_node("/root/Net").join(args[join_i + 1])
 	if "--solo" in args:
 		get_node("/root/Net").start_solo()
 		get_tree().change_scene_to_file.call_deferred("res://scenes/game.tscn")
@@ -56,8 +62,9 @@ func _dev_flags(args: PackedStringArray) -> void:
 		# benchmark: don't let a hidden, throttled window idle the GPU
 		get_node("/root/Settings").data.video.vsync = false
 		get_node("/root/Settings").apply_video()
-	if "--shot" in args or "--fps-log" in args:
-		var d: Node = preload("res://scripts/core/dev_tools.gd").new()
+	if "--shot" in args or "--fps-log" in args or "--bot" in args or "--host" in args:
+		# loaded at runtime so a broken dev script can never stop a normal launch
+		var d: Node = load("res://scripts/core/dev_tools.gd").new()
 		get_tree().root.add_child.call_deferred(d)
 
 
