@@ -42,6 +42,7 @@ var _settings: Control
 var _over: Control
 var _touch: Control
 var _popups: Control
+var _ammo_box: Control
 
 var _hit_t := 0.0
 var _hit_head := false
@@ -77,6 +78,10 @@ func _ready() -> void:
 		_touch = TouchControls.new()
 		_touch.hud = self
 		_root.add_child(_touch)
+		# the fire button lives where the ammo counter would be
+		_ammo_box.grow_vertical = Control.GROW_DIRECTION_END
+		_ammo_box.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 32)
+		_ammo_box.position.y += 70
 	_fps = T.label("", 18, Color(1, 1, 1, 0.5))
 	_fps.position = Vector2(12, 4)
 	_root.add_child(_fps)
@@ -183,6 +188,7 @@ func _build_ammo() -> void:
 	v.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(_ignore(v))
 	v.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 32)
+	_ammo_box = v
 
 
 func _build_center() -> void:
@@ -433,6 +439,8 @@ func kill_confirmed(head: bool) -> void:
 
 func game_over(r: int, summary: Array) -> void:
 	_pause.visible = false
+	for n in [_root.get_node("Banner"), _big, _toasts, _timers, _prompt, _cross]:
+		n.visible = false
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_over.visible = true
 	_over.add_child(T.scrim(0.75))

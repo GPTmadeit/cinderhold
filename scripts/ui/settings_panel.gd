@@ -164,9 +164,11 @@ func _controls_tab() -> void:
 			b.text = "Press a key…")
 		_bind_buttons[action] = b
 		_row(v, Settings.ACTION_LABELS[action], b)
-	v.add_child(T.button("Reset to defaults", func():
+	var reset := T.button("Reset to defaults", func():
 		Settings.reset_binds()
-		_refresh_binds(), 260))
+		_refresh_binds(), 260)
+	reset.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	v.add_child(reset)
 
 
 func _refresh_binds() -> void:
@@ -217,7 +219,9 @@ func _updates_tab() -> void:
 	_row(v, "GitHub access token", token)
 	v.add_child(T.label("The repository is private, so each install needs a fine-grained token with \"Contents: read\" on GPTmadeit/cinderhold. It's stored only on this device.", 17, T.MUTED))
 	_row(v, "Check on startup", _check("updates", "auto_check"))
-	v.add_child(T.button("Remove installed patch", func(): Updater.revert_patch(), 280))
+	var revert := T.button("Remove installed patch", func(): Updater.revert_patch(), 280)
+	revert.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	v.add_child(revert)
 
 
 func _refresh_updates() -> void:

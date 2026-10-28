@@ -38,8 +38,35 @@ func _maybe_autostart() -> void:
 		Net.start_game()
 
 
+var _ui_done := false
+
+
+## --ui <screen>: open a screen for screenshots (updates, settings, join, lobby, pause, gameover).
+func _dev_ui() -> void:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--ui")
+	if _ui_done or i == -1 or i + 1 >= args.size() or _t < 1.5:
+		return
+	_ui_done = true
+	var which := args[i + 1]
+	var scene := get_tree().current_scene
+	if scene.has_method("_show"):
+		if which == "updates":
+			scene._show("settings")
+			scene._panels.settings.get_child(0).get_child(0).open_updates()
+		else:
+			scene._show(which)
+	elif "hud" in scene and scene.hud:
+		match which:
+			"pause": scene.hud.set_paused(true)
+			"gameover": scene.hud.game_over(7, [
+				{"name": "Neo", "color": 0, "points": 8420, "kills": 61, "headshots": 23, "downs": 1, "revives": 2},
+				{"name": "Mara", "color": 1, "points": 7310, "kills": 52, "headshots": 30, "downs": 2, "revives": 1}])
+
+
 func _process(dt: float) -> void:
 	_t += dt
+	_dev_ui()
 	if _t > 3.0:
 		_frames += 1
 		if _fps_secs > 0.0:

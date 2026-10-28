@@ -426,18 +426,20 @@ static func fire_gradient() -> Gradient:
 func _add_fire(pos: Vector3, size: float) -> void:
 	var p := GPUParticles3D.new()
 	p.position = pos
-	p.amount = 28 if Settings.quality() >= 1 else 12
-	p.lifetime = 0.9
+	p.amount = 40 if Settings.quality() >= 1 else 18
+	p.lifetime = 0.7
 	var pm := ParticleProcessMaterial.new()
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
 	pm.emission_sphere_radius = 0.22 * size
 	pm.direction = Vector3.UP
 	pm.spread = 12.0
-	pm.initial_velocity_min = 0.6
-	pm.initial_velocity_max = 1.3
-	pm.gravity = Vector3(0, 0.8, 0)
-	pm.scale_min = 0.5
-	pm.scale_max = 1.0
+	pm.initial_velocity_min = 0.9
+	pm.initial_velocity_max = 1.8
+	pm.gravity = Vector3(0, 1.2, 0)
+	pm.turbulence_enabled = true
+	pm.turbulence_noise_strength = 0.35
+	pm.scale_min = 0.35
+	pm.scale_max = 0.8
 	var curve := CurveTexture.new()
 	var c := Curve.new()
 	c.add_point(Vector2(0, 0.6))
@@ -450,7 +452,7 @@ func _add_fire(pos: Vector3, size: float) -> void:
 	pm.color_ramp = ramp
 	p.process_material = pm
 	var q := QuadMesh.new()
-	q.size = Vector2(0.45, 0.45) * size
+	q.size = Vector2(0.3, 0.38) * size
 	q.material = particle_material()
 	p.draw_pass_1 = q
 	add_child(p)

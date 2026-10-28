@@ -29,7 +29,7 @@ var _aim_toggled := false
 
 
 func _ready() -> void:
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var pause := T.button("II", func(): hud.set_paused(true), 64)
 	pause.alignment = HORIZONTAL_ALIGNMENT_CENTER
