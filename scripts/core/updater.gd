@@ -8,6 +8,10 @@ extends Node
 ## as a full download instead. The repository is public, so no account is
 ## needed; an optional token (Settings → Updates) only lifts GitHub's
 ## anonymous rate limit.
+##
+## PATCH SAFETY: never add, remove, retype or reorder this autoload's member
+## variables; installed copies keep the old layout when a patch swaps the
+## script in. See scripts/tools/check_autoload_layout.py.
 
 signal state_changed
 

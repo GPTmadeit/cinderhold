@@ -1,6 +1,10 @@
 extends Node
 ## Lobby and connection management. Solo play uses the offline peer, so the
 ## local player is always the server and every game path is shared.
+##
+## PATCH SAFETY: never add, remove, retype or reorder this autoload's member
+## variables; installed copies keep the old layout when a patch swaps the
+## script in. See scripts/tools/check_autoload_layout.py.
 
 signal roster_changed
 signal connection_failed(reason: String)

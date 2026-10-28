@@ -87,7 +87,7 @@ func _ready() -> void:
 	hud.bind(self, local_player)
 
 	await _warm_shaders(ls)
-	while not Sfx.is_ready:   # first launch: sounds may still be synthesising
+	while not Sfx.is_ready():   # first launch: sounds may still be synthesising
 		ls.set_progress(0.95 + 0.04 * Sfx.progress(), "Tuning the bells…")
 		await get_tree().process_frame
 	loaded = true

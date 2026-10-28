@@ -37,6 +37,11 @@ jobs:
           echo "VERSION=$v" >> "$GITHUB_ENV"
           echo "TAG=v$v" >> "$GITHUB_ENV"
 
+      # Patches swap autoload scripts in place on installed copies, so their
+      # member variables must never change (see the script for why).
+      - name: Check autoload layouts
+        run: python3 scripts/tools/check_autoload_layout.py
+
       - name: Install Godot and export templates
         run: |
           base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable

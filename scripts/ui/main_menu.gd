@@ -62,7 +62,7 @@ func _ready() -> void:
 	Updater.state_changed.connect(_refresh_badge)
 	_refresh_badge()
 
-	while not Sfx.is_ready:   # first launch: sounds are still being synthesised
+	while not Sfx.is_ready():   # first launch: sounds are still being synthesised
 		ls.set_progress(0.85 + 0.14 * Sfx.progress(), "Tuning the bells…")
 		await get_tree().process_frame
 	ls.close()

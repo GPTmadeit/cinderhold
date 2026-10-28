@@ -1,5 +1,9 @@
 extends Node
 ## Persistent player options, the input map and graphics presets.
+##
+## PATCH SAFETY: never add, remove, retype or reorder this autoload's member
+## variables; installed copies keep the old layout when a patch swaps the
+## script in. See scripts/tools/check_autoload_layout.py.
 
 signal changed
 
