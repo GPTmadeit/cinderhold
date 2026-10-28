@@ -52,7 +52,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The action's default package list includes "tools", which current
+      # SDK tooling no longer has, so name the packages explicitly.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       # Godot signs the APK with apksigner from build-tools. ANDROID_HOME and
       # JAVA_HOME are picked up into Godot's editor settings on its first run.
