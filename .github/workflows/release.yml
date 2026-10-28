@@ -109,10 +109,10 @@ jobs:
           prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
           [ "$prev" = "$TAG" ] && prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
           {
-            echo "Installed copies update in-game: Settings → Updates (or the main menu badge)."
+            sed "s/{{VERSION}}/$VERSION/g" .github/release-notes.md
             echo
             echo "### Changes"
-            git log --pretty='- %s' "${prev:+$prev..}HEAD"
+            git log --no-merges --pretty='- %s' "${prev:+$prev..}HEAD" | grep -v "^- CI:" || echo "- Maintenance"
           } > notes.md
           # A manual re-run replaces the release and points the tag at this commit.
           if gh release view "$TAG" > /dev/null 2>&1; then
