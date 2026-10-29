@@ -15,6 +15,10 @@
 
 Installed copies update themselves. Open **Settings → Updates**, or click the badge on the main menu, then **Download update** and **Restart**. No account or token is needed. A full download is only needed when a release changes the game engine, and the game says so when that happens.
 
+### If the game crashes
+
+The next launch shows a notice on the main menu with a **Copy report** button. The report is a short log of the session: frame rate, memory and errors, plus Android's own reason for the exit on Android 11 and later. Paste it into an issue or a message so the crash can be fixed. Nothing is sent anywhere automatically.
+
 ### Playing together
 
 One player picks **Host Co-op**. Friends pick **Join Co-op** and enter the host's address, which can be a LAN, ZeroTier or Tailscale IP. The game uses UDP port **47820**.

@@ -385,31 +385,7 @@ func local_hit(point: Vector3, head: bool) -> void:
 
 
 func _burst(point: Vector3, big: bool) -> void:
-	var p := GPUParticles3D.new()
-	p.amount = 18 if big else 8
-	p.lifetime = 0.6
-	p.one_shot = true
-	p.explosiveness = 0.95
-	var pm := ParticleProcessMaterial.new()
-	pm.direction = Vector3.UP
-	pm.spread = 80.0
-	pm.initial_velocity_min = 1.5
-	pm.initial_velocity_max = 4.0
-	pm.gravity = Vector3(0, -9, 0)
-	pm.scale_min = 0.6
-	pm.scale_max = 1.2
-	var ramp := GradientTexture1D.new()
-	ramp.gradient = preload("res://scripts/world/arena.gd").fire_gradient()
-	pm.color_ramp = ramp
-	p.process_material = pm
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.05, 0.05, 0.05)
-	bm.material = preload("res://scripts/world/arena.gd").particle_material()
-	p.draw_pass_1 = bm
-	get_parent().add_child(p)
-	p.global_position = point
-	p.emitting = true
-	get_tree().create_timer(1.2).timeout.connect(p.queue_free)
+	game.fx_root.burst(point, big)
 
 
 func die(headshot: bool) -> void:

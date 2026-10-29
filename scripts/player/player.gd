@@ -739,76 +739,15 @@ func receive_perk(key: String) -> void:
 # =========================================================================
 
 func _tracer(from: Vector3, to: Vector3, hot: bool) -> void:
-	var len := from.distance_to(to)
-	if len < 0.5:
-		return
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.012, 0.012, len)
-	var m := StandardMaterial3D.new()
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.albedo_color = Color(1.0, 0.55, 0.2, 0.7) if hot else Color(1.0, 0.85, 0.55, 0.45)
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	bm.material = m
-	mi.mesh = bm
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	game.fx_root.add_child(mi)
-	mi.global_position = (from + to) * 0.5
-	mi.look_at(to, Vector3.UP if absf((to - from).normalized().y) < 0.99 else Vector3.RIGHT)
-	var tw := mi.create_tween()
-	tw.tween_property(m, "albedo_color:a", 0.0, 0.07)
-	tw.tween_callback(mi.queue_free)
+	game.fx_root.tracer(from, to, hot)
 
 
 func _arc(from: Vector3, to: Vector3) -> void:
-	var steps := 6
-	var prev := from
-	for i in range(1, steps + 1):
-		var p := from.lerp(to, float(i) / steps)
-		if i < steps:
-			p += Vector3(_rng.randf_range(-0.25, 0.25), _rng.randf_range(-0.25, 0.25), _rng.randf_range(-0.25, 0.25))
-		_tracer(prev, p, true)
-		prev = p
+	game.fx_root.arc(from, to, _rng)
 
 
 func _impact(pos: Vector3, normal: Vector3, big := false) -> void:
-	var p := GPUParticles3D.new()
-	p.amount = 24 if big else 6
-	p.lifetime = 0.45
-	p.one_shot = true
-	p.explosiveness = 1.0
-	var pm := ParticleProcessMaterial.new()
-	pm.direction = normal
-	pm.spread = 45.0 if not big else 180.0
-	pm.initial_velocity_min = 1.0
-	pm.initial_velocity_max = 3.5 if not big else 6.0
-	pm.gravity = Vector3(0, -9, 0)
-	pm.scale_min = 0.5
-	pm.scale_max = 1.0
-	pm.color = Color(1.0, 0.75, 0.4) if big else Color(0.75, 0.68, 0.6)
-	p.process_material = pm
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.035, 0.035, 0.035)
-	var m := StandardMaterial3D.new()
-	m.vertex_color_use_as_albedo = true
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED if big else BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	bm.material = m
-	p.draw_pass_1 = bm
-	game.fx_root.add_child(p)
-	p.global_position = pos + normal * 0.02
-	p.emitting = true
-	get_tree().create_timer(1.0).timeout.connect(p.queue_free)
-	if big:
-		var l := OmniLight3D.new()
-		l.light_color = Color("ffa040")
-		l.light_energy = 4.0
-		l.omni_range = 6.0
-		game.fx_root.add_child(l)
-		l.global_position = pos + normal * 0.3
-		var tw := l.create_tween()
-		tw.tween_property(l, "light_energy", 0.0, 0.35)
-		tw.tween_callback(l.queue_free)
+	game.fx_root.impact(pos, normal, big)
 
 
 @rpc("authority", "unreliable", "call_remote")

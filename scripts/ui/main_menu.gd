@@ -7,6 +7,7 @@ const ArenaScript := preload("res://scripts/world/arena.gd")
 const SettingsPanel := preload("res://scripts/ui/settings_panel.gd")
 const M := preload("res://scripts/voxel/models.gd")
 const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
+const Diagnostics := preload("res://scripts/core/diagnostics.gd")
 
 var _ui: Control
 var _cam: Camera3D
@@ -24,6 +25,7 @@ var _ip_edit: LineEdit
 
 
 func _ready() -> void:
+	Diagnostics.ensure(get_tree())
 	get_tree().paused = false
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	var ls = LoadingScreen.open(get_tree(), "Lighting the braziers…")
@@ -76,6 +78,39 @@ func _ready() -> void:
 		_show("lobby")       # came back from a match
 	else:
 		_show("main")
+	_crash_notice()
+
+
+## After a crash, offer the report the diagnostics kept.
+func _crash_notice() -> void:
+	var d := Diagnostics.ensure(get_tree())
+	if not d.crashed:
+		return
+	var p := PanelContainer.new()
+	p.add_theme_stylebox_override("panel", T.box(Color(0.12, 0.05, 0.04, 0.92), Color("ff9a6a"), 1, 6, 14))
+	p.custom_minimum_size.x = 560
+	p.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)   # grows up and left from the corner
+	p.offset_right = -28
+	p.offset_bottom = -28
+	p.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	p.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	var v := VBoxContainer.new()
+	p.add_child(v)
+	var what := T.label("Cinderhold closed unexpectedly last time (%s)." % d.summary, 19, T.TEXT)
+	what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(what)
+	var hint := T.label("Copy the crash report and send it along so it can be fixed.", 17, T.MUTED)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(hint)
+	var row := HBoxContainer.new()
+	row.add_child(T.button("Copy report", func():
+		DisplayServer.clipboard_set(d.report())
+		hint.text = "Report copied. Paste it into a message.", 220))
+	row.add_child(T.button("Dismiss", func():
+		d.dismiss()
+		p.queue_free(), 160))
+	v.add_child(row)
+	_ui.add_child(p)
 
 
 func _side_gradient() -> GradientTexture2D:

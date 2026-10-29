@@ -116,10 +116,41 @@ func _perf_log(dt: float) -> void:
 		_plog_n = 0
 
 
+var _fx_t := 0.0
+
+
+## --fx-demo: keep firing every hit effect in front of the camera (for screenshots).
+func _fx_demo(dt: float) -> void:
+	var game := get_tree().current_scene
+	if not "--fx-demo" in OS.get_cmdline_user_args() or game == null or not "loaded" in game or not game.loaded:
+		return
+	if not has_meta("fx_demo"):
+		set_meta("fx_demo", true)
+		print("FXDEMO started at %.1f s" % _t)
+	var cam := get_viewport().get_camera_3d()
+	var fwd := -cam.global_basis.z
+	var right := cam.global_basis.x
+	var at := cam.global_position + fwd * 3.0
+	var hit := cam.get_world_3d().direct_space_state.intersect_ray(
+		PhysicsRayQueryParameters3D.create(cam.global_position, cam.global_position + fwd * 6.0, 1))
+	if not hit.is_empty():
+		at = hit.position - fwd * 0.4
+	game.fx_root.tracer(cam.global_position + right * 0.3 - Vector3.UP * 0.2, at + right * 2.0, false)
+	game.fx_root.tracer(cam.global_position - right * 0.3 - Vector3.UP * 0.2, at - right * 2.0, true)
+	_fx_t -= dt
+	if _fx_t <= 0.0:
+		_fx_t = 0.12
+		game.fx_root.impact(at - right * 0.8, -fwd)
+		game.fx_root.impact(at + right * 0.8, -fwd, true)
+		game.fx_root.burst(at + Vector3.UP * 0.6, false)
+		game.fx_root.burst(at - Vector3.UP * 0.4, true)
+
+
 func _process(dt: float) -> void:
 	_t += dt
 	_dev_ui()
 	_perf_log(dt)
+	_fx_demo(dt)
 	if _t > 3.0:
 		_frames += 1
 		if _fps_secs > 0.0:
@@ -308,6 +339,19 @@ func _bot_report(game: Node, p: Node) -> void:
 	print("PERF round=%d alive=%d nodes=%d objects=%d physics avg %.2f ms max %.2f ms | process max %.2f ms" % [
 		game.round_num, game.enemies.size(), Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
 		Performance.get_monitor(Performance.OBJECT_COUNT), _win_phys_sum / maxi(_win_n, 1), _win_phys_max, _win_proc_max])
+	print("MEM rss %s | static %.1f MB | video %.1f MB (textures %.1f, buffers %.1f) | resources %d orphan nodes %d" % [
+		preload("res://scripts/core/diagnostics.gd").rss(), Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0,
+		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.RENDER_BUFFER_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT),
+		Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)])
+	print("PIPELINES compiled: canvas %d mesh %d surface %d draw %d specialization %d" % [
+		Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_CANVAS),
+		Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_MESH),
+		Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SURFACE),
+		Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW),
+		Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SPECIALIZATION)])
 	var prof: Dictionary = preload("res://scripts/core/prof.gd").take()
 	if not prof.is_empty():
 		var parts := []

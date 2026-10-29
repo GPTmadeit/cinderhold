@@ -687,31 +687,40 @@ func open_door(letter: String, animate := true) -> void:
 	door_opened.emit(letter)
 
 
+static var _dust_pm: ParticleProcessMaterial
+static var _dust_quad: QuadMesh
+
+
+## Dust kicked up when a door opens. The materials are kept for the whole
+## session, so their shaders aren't rebuilt (and recompiled) for every door.
 func _dust_burst(pos: Vector3) -> void:
+	if _dust_pm == null:
+		var pm := ParticleProcessMaterial.new()
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+		pm.emission_box_extents = Vector3(1.0, 0.3, 1.0)
+		pm.direction = Vector3.UP
+		pm.spread = 70.0
+		pm.initial_velocity_min = 0.5
+		pm.initial_velocity_max = 2.0
+		pm.gravity = Vector3(0, -0.5, 0)
+		pm.scale_min = 1.0
+		pm.scale_max = 2.5
+		pm.color = Color(0.6, 0.5, 0.45, 0.35)
+		_dust_pm = pm
+		var q := QuadMesh.new()
+		q.size = Vector2(0.5, 0.5)
+		var m := particle_material().duplicate() as StandardMaterial3D
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
+		q.material = m
+		_dust_quad = q
 	var p := GPUParticles3D.new()
 	p.position = pos + Vector3(0, 0.3, 0)
 	p.amount = 40
 	p.lifetime = 1.6
 	p.one_shot = true
 	p.explosiveness = 0.8
-	var pm := ParticleProcessMaterial.new()
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents = Vector3(1.0, 0.3, 1.0)
-	pm.direction = Vector3.UP
-	pm.spread = 70.0
-	pm.initial_velocity_min = 0.5
-	pm.initial_velocity_max = 2.0
-	pm.gravity = Vector3(0, -0.5, 0)
-	pm.scale_min = 1.0
-	pm.scale_max = 2.5
-	pm.color = Color(0.6, 0.5, 0.45, 0.35)
-	p.process_material = pm
-	var q := QuadMesh.new()
-	q.size = Vector2(0.5, 0.5)
-	var m := particle_material().duplicate() as StandardMaterial3D
-	m.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
-	q.material = m
-	p.draw_pass_1 = q
+	p.process_material = _dust_pm
+	p.draw_pass_1 = _dust_quad
 	add_child(p)
 	p.emitting = true
 	get_tree().create_timer(2.5).timeout.connect(p.queue_free)

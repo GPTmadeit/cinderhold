@@ -540,7 +540,7 @@ func _process(dt: float) -> void:
 	var hurt := maxf(player.hurt_flash * 0.8, (1.0 - player.hp / player.max_hp) * 0.9 if player.hp < player.max_hp * 0.6 else 0.0)
 	vm.set_shader_parameter("amount", hurt if not player.downed else 1.0)
 
-	_down_panel.visible = player.downed or player.dead
+	_down_panel.visible = (player.downed or player.dead) and not _over.visible
 	if player.dead:
 		_down_lbl.text = "BLED OUT\nSPECTATING UNTIL NEXT ROUND"
 	elif player.downed:

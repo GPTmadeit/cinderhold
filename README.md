@@ -19,6 +19,10 @@ Installed copies update themselves from this repository's releases. Each release
 
 No account or token is needed. **Settings → Updates** has the controls, and the main menu shows a badge when an update is available. A GitHub token can be pasted there if GitHub ever rate-limits update checks from your network, but it's optional.
 
+## Crash reports
+
+Each session keeps a small log in `user://diagnostics`: a heartbeat every few seconds (scene, round, frame rate, memory) plus engine and script errors. If a session ends without a clean exit while the game was in the foreground, the next launch turns that log into a report, and the main menu offers **Copy report**. On Android 11 and later, the report also includes the system's reason for the exit, such as low memory, a native crash or not responding. Nothing leaves the device unless the player copies the report.
+
 ## Releasing
 
 ```bash

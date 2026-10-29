@@ -8,10 +8,12 @@ const ArenaScript := preload("res://scripts/world/arena.gd")
 const PlayerScript := preload("res://scripts/player/player.gd")
 const EnemyScript := preload("res://scripts/enemy/enemy.gd")
 const HudScript := preload("res://scripts/ui/hud.gd")
+const FxScript := preload("res://scripts/game/fx.gd")
 const W := preload("res://scripts/game/weapons.gd")
 const P := preload("res://scripts/game/perks.gd")
 const M := preload("res://scripts/voxel/models.gd")
 const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
+const Diagnostics := preload("res://scripts/core/diagnostics.gd")
 
 const SNAP_RATE := 15.0
 const INTERMISSION := 10.0
@@ -21,7 +23,7 @@ const POWERUP_KINDS := ["resupply", "double", "deadeye", "purge"]
 var arena: Node3D
 var players_root: Node3D
 var enemies_root: Node3D
-var fx_root: Node3D
+var fx_root: FxScript              # pooled hit effects; also holds power-ups
 var hud: CanvasLayer
 var local_player: CharacterBody3D
 
@@ -53,6 +55,7 @@ var _check_t := 0.0
 
 
 func _ready() -> void:
+	Diagnostics.ensure(get_tree())
 	_rng.randomize()
 	var ls = LoadingScreen.open(get_tree(), "Preparing the outpost…")
 	players_root = Node3D.new()
@@ -61,7 +64,7 @@ func _ready() -> void:
 	enemies_root = Node3D.new()
 	enemies_root.name = "Enemies"
 	add_child(enemies_root)
-	fx_root = Node3D.new()
+	fx_root = FxScript.new()
 	fx_root.name = "FX"
 	add_child(fx_root)
 	arena = ArenaScript.new()
@@ -157,11 +160,7 @@ func _warm_shaders(ls) -> void:
 		mi.scale = Vector3.ONE * 0.3
 		stage.add_child(mi)
 		x += 0.1
-	# effects that bring their own materials
-	if local_player:
-		local_player._impact(stage.global_position, Vector3.UP, true)
-		local_player._impact(stage.global_position + Vector3.RIGHT * 0.3, Vector3.UP)
-		local_player._tracer(stage.global_position - Vector3.RIGHT, stage.global_position + Vector3.RIGHT, true)
+	fx_root.warm(stage.global_position)
 	arena._dust_burst(stage.global_position)
 	for f in 4:
 		ls.set_progress(0.78 + 0.17 * (f + 1) / 4.0, "Warming the shaders…")
@@ -540,6 +539,8 @@ func _request(kind: String, key: String, extra) -> void:
 			add_points(peer, -d.cost)
 			_door_opened.rpc(key, peer)
 		"wallbuy":
+			if not W.DEFS.has(key) or arena.find_interactable("wallbuy", key).is_empty():
+				return   # only weapons hanging on a wall can be bought
 			var wd := W.get_def(key)
 			var owned: bool = extra == true
 			var price: int = wd.ammo_cost if owned else wd.cost
