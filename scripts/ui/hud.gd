@@ -18,6 +18,7 @@ var _points_box: VBoxContainer
 var _perk_row: HBoxContainer
 var _health: ProgressBar
 var _weapon_lbl: Label
+var _nade_lbl: Label
 var _ammo_lbl: Label
 var _reserve_lbl: Label
 var _ammo_warn: Label
@@ -184,6 +185,9 @@ func _build_ammo() -> void:
 	_weapon_lbl = T.label("", 24, T.EMBER_SOFT, true)
 	_weapon_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	v.add_child(_weapon_lbl)
+	_nade_lbl = T.label("", 20, T.MUTED, true)
+	_nade_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	v.add_child(_nade_lbl)
 	v.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	v.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(_ignore(v))
@@ -357,6 +361,23 @@ func _unhandled_input(event: InputEvent) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and Net.solo and not "--shot" in OS.get_cmdline_user_args() and _over and not _over.visible and _pause and not _pause.visible:
 		set_paused(true)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		_keep_mouse_locked(true)
+
+
+## Keep the mouse locked to the game whenever it's being played. Windows can
+## lose the lock on any focus change (alt-tab, a notification, Wayland
+## dropping the pointer constraint), and it used to come back only on the
+## next click. `force` re-applies the lock even if Godot thinks it holds.
+func _keep_mouse_locked(force := false) -> void:
+	if _pause == null or menu_open() or Settings.use_touch() or not Settings.can_capture_mouse():
+		return
+	if not get_window().has_focus():
+		return
+	if force and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func toast(text: String, color := T.TEXT) -> void:
@@ -492,6 +513,7 @@ func _host_quit() -> void:
 func _process(dt: float) -> void:
 	if player == null or game == null:
 		return
+	_keep_mouse_locked()
 	_fps.visible = bool(Settings.get_v("gameplay", "show_fps"))
 	if _fps.visible:
 		_fps.text = "%d fps" % Engine.get_frames_per_second()
@@ -508,6 +530,7 @@ func _process(dt: float) -> void:
 	var w: Dictionary = player.weapon()
 	if w.is_empty():
 		_weapon_lbl.text = "In the forge…" if player.forge_pending != "" else ""
+		_nade_lbl.text = ""
 		_ammo_lbl.text = ""
 		_reserve_lbl.text = ""
 		_ammo_warn.text = ""
@@ -515,6 +538,9 @@ func _process(dt: float) -> void:
 		var def := W.get_def(w.id, w.upgraded)
 		_weapon_lbl.text = def.name
 		_tint(_weapon_lbl, T.EMBER if w.upgraded else T.EMBER_SOFT)
+		var key := "" if Settings.use_touch() else " [%s]" % Settings.bind_label("grenade")
+		_nade_lbl.text = ("%d grenade%s%s" % [player.grenades, "" if player.grenades == 1 else "s", key]) if player.grenades > 0 else "no grenades"
+		_tint(_nade_lbl, T.MUTED if player.grenades > 0 else Color("a06050"))
 		_ammo_lbl.text = str(w.mag)
 		_reserve_lbl.text = " / %d" % w.reserve
 		var low: bool = w.mag <= int(ceil(def.mag * 0.25))

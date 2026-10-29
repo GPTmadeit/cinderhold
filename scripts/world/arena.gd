@@ -4,8 +4,11 @@ extends Node3D
 ##
 ## One map cell is 1 m. Legend:
 ##   #  wall           ,  barracks planks   ;  hall tiles   .  cobble   :  earth
-##   A-D door cells    V  ash vent (enemy spawn)            S  player spawn
+##   A-D door cells    S  player spawn
 ##   k bunk  t table  o barrel  c crate  w well  T dead tree  g grave  b brazier  l lantern
+##
+## The ash vents enemies climb out of are placed at random each match (see
+## _place_vents), from a seed the host shares so every player sees the same.
 
 signal door_opened(letter: String)
 
@@ -15,8 +18,8 @@ const M := preload("res://scripts/voxel/models.gd")
 const LAYOUT := [
 	"########################################",
 	"#,kk,,kk,,,,kk,,kk,#;;;;;;;;;b;;;;;;;;;#",
-	"#,,,,,,,,,,,,,,,,,,#;V;;;;;;;;;;;;;;;;;#",
-	"#,V,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;V;#",
+	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
+	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
 	"#,,,,,,,,b,,,,,,,,,#;;;#;;;#;;;;#;;;#;;#",
 	"#,,,,,,,,,,,,,,,,,,C;;;;;;;;;;;;;;;;;;;#",
 	"#,,,,,,,,,,,,,,,,,,C;;;;;;;;;;;;;;;;;;;#",
@@ -25,23 +28,23 @@ const LAYOUT := [
 	"#,,,,,,,,,,,,,,,,,,#;;;#;;;#;;;;#;;;#;;#",
 	"#,,,,,,,,,,,,,,cc,,#;;;;;;;;;;;;;;;;;;;#",
 	"#,o,,,,,,,,,,,,,c,,#;c;;;;;;;;;;;;;;;o;#",
-	"#,,,,,,,,,,,,,,,,V,#;;;;;;;;;;;;;;;;;;;#",
+	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
 	"########AA####################DD########",
 	"#......................#:::::::::::::b:#",
-	"#.l.........o........V.#:::::V:::::::::#",
+	"#.l.........o..........#:::::::::::::::#",
 	"#................cc....#::::::::::T::::#",
 	"#.................c....#:::T:::::::::::#",
 	"#......................#:::::::::::::::#",
 	"#.....ww...SS..........#::::::::gg:::::#",
-	"#.....ww...SS..........B:l:::::::::::V:#",
+	"#.....ww...SS..........B:l:::::::::::::#",
 	"#......................B::::g::::::::::#",
 	"#............b.........#:::::::::::g:::#",
 	"#......................#::::::T::::::::#",
 	"#......................#:::::::::::::::#",
 	"#......................#:::::::::::::::#",
 	"#..co...............l..#::T:::::::::T::#",
-	"#.V....................#::::::::::::::V#",
-	"#.........V............#:::::::::::::::#",
+	"#......................#:::::::::::::::#",
+	"#......................#:::::::::::::::#",
 	"########################################",
 ]
 
@@ -66,11 +69,10 @@ const PLACEMENTS := [
 	{"kind": "cache", "key": "cache", "cell": Vector2i(30, 28), "face": Vector3.FORWARD},
 ]
 
-const VPC := 4                  # voxels per cell
-const VS := 1.0 / VPC
-const WALL_H := 14              # voxels (3.5 m)
-const DOOR_H := 12              # voxels (3 m)
-const WALKABLE := ",;.:VS"
+const TerrainScript := preload("res://scripts/world/terrain.gd")
+const WALKABLE := ",;.:S"
+## Vents per zone each match (half the old fixed ten).
+const VENT_QUOTA := {"court": 2, "barracks": 1, "hall": 1, "garden": 1}
 
 var W := 0
 var H := 0
@@ -90,11 +92,12 @@ var menu_mode := false
 ## Build the whole outpost. Pass `report(fraction, stage)` to build across
 ## several frames behind a loading screen (await it); without one it runs
 ## straight through, which tests rely on.
-func build(for_menu := false, report := Callable()) -> void:
+func build(for_menu := false, report := Callable(), vent_seed := 0) -> void:
 	_report = report
 	_slice_t = Time.get_ticks_msec()
 	menu_mode = for_menu
 	_rng.seed = 90210
+	_vent_seed = vent_seed
 	H = LAYOUT.size()
 	W = LAYOUT[0].length()
 	walk.resize(W * H)
@@ -108,12 +111,16 @@ func build(for_menu := false, report := Callable()) -> void:
 	add_child(_world_body)
 	var off := OS.get_environment("CINDER_DISABLE").split(",")   # dev bisecting
 	await _step(0.02, "Lighting the braziers…")
+	# props build on worker threads while the terrain does
+	var props_task := _start_prop_builds()
 	if not "env" in off:
 		_build_environment()
 	if not "terrain" in off:
 		await _build_terrain()
-	await _step(0.76, "Furnishing the outpost…")
+	await _step(0.7, "Furnishing the outpost…")
+	await _finish_tasks(props_task, 0.7, 0.86, "Furnishing the outpost…")
 	await _build_props()
+	_place_vents()
 	await _step(0.9, "Hanging the doors…")
 	_build_doors()
 	_build_interactables()
@@ -131,6 +138,7 @@ func build(for_menu := false, report := Callable()) -> void:
 
 var _report := Callable()
 var _slice_t := 0
+var _vent_seed := 0
 
 
 ## Report progress and, when building asynchronously, hand the frame back once
@@ -162,6 +170,17 @@ func _floor_ch(x: int, y: int) -> String:
 	return ";"
 
 
+## What a footstep at `p` sounds like: "wood", "stone" or "dirt".
+func surface_at(p: Vector3) -> String:
+	var c := cell_of(p)
+	var ch := _floor_ch(c.x, c.y)
+	if ch == ",":
+		return "wood"
+	if ch == ":" or (ch == ";" and c.y >= 6 and c.y <= 7 and c.x >= 20):
+		return "dirt"     # garden earth, and the hall's carpet runner is just as soft
+	return "stone"
+
+
 func cell_center(c: Vector2i) -> Vector3:
 	return Vector3(c.x + 0.5, 0.0, c.y + 0.5)
 
@@ -186,106 +205,46 @@ func bounds() -> AABB:
 # Terrain: floors and walls as chunked voxel meshes + merged colliders
 # =========================================================================
 
-func _floor_color(ch: String, vx: int, vz: int) -> Color:
-	var cx := vx / VPC
-	var cz := vz / VPC
-	match ch:
-		",":
-			var row := vz
-			var seam := (vx + (row * 7) % 11) % 12 == 0
-			var shade := float(absi(hash(Vector2i(row, (vx + (row * 7) % 11) / 12))) % 100) / 100.0
-			var c := Color("6e4a2e").lerp(Color("85603c"), shade)
-			return c.darkened(0.35) if seam else c
-		";":
-			if cz >= 6 and cz <= 7 and cx >= 20:            # carpet runner through the hall
-				var border := (vz == 24 or vz == 31)
-				return Color("b08a3c") if border else Color("5a1e22")
-			var grout := vx % VPC == 0 or vz % VPC == 0
-			var c := Color("4d474d") if (cx + cz) % 2 == 0 else Color("5c555a")
-			return c.darkened(0.3) if grout else c
-		".":
-			var off := 2 if (vz / 2) % 2 == 1 else 0
-			var mortar := vz % 2 == 0 and (vx + off) % 4 == 0
-			var stone_id := Vector2i((vx + off) / 4, vz / 2)
-			var palette := [Color("5d5753"), Color("6a625b"), Color("534e4c"), Color("70675e")]
-			var c: Color = palette[absi(hash(stone_id)) % 4]
-			return c.darkened(0.4) if mortar else c
-		_:
-			var n := float(absi(hash(Vector2i(vx, vz))) % 100) / 100.0
-			return Color("3d3128").lerp(Color("4a3d30"), n)
-
-
-func _wall_color(vx: int, vy: int, vz: int, outdoor: bool) -> Color:
-	var course := vy / 2
-	var off := 2 if course % 2 == 1 else 0
-	var along := vx + vz
-	var brick := Vector3i((along + off) / 3, course, 0)
-	var mortar := vy % 2 == 0 or (along + off) % 3 == 0
-	var palette := [Color("625a5c"), Color("6e6566"), Color("57504f"), Color("756b66"), Color("5e5450")]
-	var c: Color = palette[absi(hash(brick)) % palette.size()]
-	if mortar:
-		c = c.darkened(0.28)
-	if outdoor and vy < 3 and absi(hash(Vector3i(vx, vy, vz))) % 3 == 0:
-		c = c.lerp(Color("34402a"), 0.6)                     # moss creeping up
-	if vy >= WALL_H - 1:
-		c = c.lightened(0.08)
-	return c
+## Meshes built once per session: the menu's backdrop and every match share
+## them (the terrain never changes; vents and props are placed separately).
+static var _terrain_meshes: Array[ArrayMesh] = []
 
 
 func _build_terrain() -> void:
-	var b := VB.new()
-	b.skip_bottom = true
-	for y in H:
-		await _step(0.05 + 0.3 * y / H, "Laying the stones…")
-		for x in W:
-			var ch := _ch(x, y)
-			var is_wall := ch == "#"
-			var is_door := DOORS.has(ch)
-			var outdoor := y > 13
-			for sx in VPC:
-				for sz in VPC:
-					var vx := x * VPC + sx
-					var vz := y * VPC + sz
-					if is_wall:
-						var top := WALL_H
-						if x == 0 or y == 0 or x == W - 1 or y == H - 1:
-							if (sx / 2 + sz / 2 + x + y) % 2 == 0:
-								top += 2                       # crenellations
-						for vy in top:
-							b.vox[Vector3i(vx, vy, vz)] = _wall_color(vx, vy, vz, outdoor)
-					elif is_door:
-						b.vox[Vector3i(vx, -1, vz)] = Color("4a4448")
-						for vy in range(DOOR_H, WALL_H):
-							b.vox[Vector3i(vx, vy, vz)] = _wall_color(vx, vy, vz, false).darkened(0.1)
-					else:
-						var fc := _floor_ch(x, y)
-						b.vox[Vector3i(vx, -1, vz)] = _floor_color(fc, vx, vz)
-						if fc == ":" and absi(hash(Vector2i(vx * 3, vz * 5))) % 13 == 0:
-							b.vox[Vector3i(vx, 0, vz)] = Color("6b6340").lerp(Color("4a4a30"), float(absi(hash(vx + vz)) % 10) / 10.0)
-	# roof beams over the indoor halls (purely visual)
-	for bx in range(1, 19, 4):
-		for vz in range(1 * VPC, 13 * VPC):
-			b.vox[Vector3i(bx * VPC + 1, WALL_H - 2, vz)] = Color("4f331f") if vz % 8 else Color("3a2414")
-			b.vox[Vector3i(bx * VPC + 2, WALL_H - 2, vz)] = Color("5a3a24")
-	for bz in range(2, 13, 3):
-		for vx in range(20 * VPC, 39 * VPC):
-			b.vox[Vector3i(vx, WALL_H - 1, bz * VPC + 1)] = Color("3a2a1e")
-	# Mesh in 10×10 cell chunks.
-	var buckets := {}
-	for p in b.vox:
-		var key := Vector2i(p.x / (VPC * 10), p.z / (VPC * 10))
-		if not buckets.has(key):
-			buckets[key] = []
-		buckets[key].append(p)
-	var done := 0
-	for key in buckets:
-		await _step(0.36 + 0.38 * done / buckets.size(), "Raising the walls…")
-		done += 1
+	if _terrain_meshes.is_empty():
+		var t = TerrainScript.new()
+		var doors := "".join(DOORS.keys())
+		# Columns first (one task), then every chunk in parallel.
+		await _run_tasks(func(_i): t.setup(LAYOUT, _floor_ch, doors), 1, 0.05, 0.15, "Laying the stones…")
+		var n: int = t.chunk_count()
+		var results := []
+		results.resize(n)
+		await _run_tasks(func(i): results[i] = t.mesh_chunk(i), n, 0.15, 0.65, "Raising the walls…")
+		for i in n:
+			_terrain_meshes.append(VB.arrays_to_mesh(results[i], TerrainScript.VS, Vector3.ZERO, 2.5, false))
+	for i in _terrain_meshes.size():
 		var mi := MeshInstance3D.new()
-		mi.mesh = b.build_subset(buckets[key], VS)
-		mi.name = "Chunk_%d_%d" % [key.x, key.y]
+		mi.mesh = _terrain_meshes[i]
+		mi.name = "Chunk_%d" % i
 		add_child(mi)
 	_build_colliders()
+
+
+## Run job(i) for i in [0, count) on the worker pool, keeping the loading
+## screen alive (progress from f0 to f1) while they finish.
+func _run_tasks(job: Callable, count: int, f0: float, f1: float, stage: String) -> void:
+	await _finish_tasks(WorkerThreadPool.add_group_task(job, count, -1, true, "Cinderhold: " + stage), f0, f1, stage)
+
+
+func _finish_tasks(task: int, f0: float, f1: float, stage: String) -> void:
+	while not WorkerThreadPool.is_group_task_completed(task):
+		if _report.is_valid():
+			_report.call(f0 + (f1 - f0) * 0.5, stage)
+			await get_tree().process_frame
+		else:
+			OS.delay_msec(1)
+	WorkerThreadPool.wait_for_group_task_completion(task)
+	_slice_t = Time.get_ticks_msec()
 
 
 func _add_box(center: Vector3, size: Vector3) -> void:
@@ -327,10 +286,33 @@ func _place_mesh(mesh: Mesh, pos: Vector3, yaw := 0.0, scale_v := 1.0) -> MeshIn
 	return mi
 
 
+## Every prop model this map uses, built in parallel on worker threads
+## (models.gd caches them, so placing them later just reuses the meshes).
+## Returns the group task, or -1 when there's nothing to build.
+func _start_prop_builds() -> int:
+	var jobs: Array[Callable] = [M.crate, M.barrel, M.brazier, M.lantern_post, M.well, M.bunk, M.table,
+		M.vent, M.forge, M.cache_chest, M.plaque, func(): M.door(2.0, 3.0)]
+	for k in ["ironhide", "quickhands", "fleetfoot", "secondwind"]:
+		var color: Color = preload("res://scripts/game/perks.gd").PERKS[k].color
+		jobs.append(func(): M.tonic_machine(color))
+	for y in H:
+		for x in W:
+			match _ch(x, y):
+				"T":
+					var sd := x * 31 + y
+					jobs.append(func(): M.dead_tree(sd))
+				"g":
+					var sd := x + y * 3
+					jobs.append(func(): M.gravestone(sd))
+	for i in 14:
+		jobs.append(func(): M.ruin(i))
+	return WorkerThreadPool.add_group_task(func(i): jobs[i].call(), jobs.size(), -1, true, "Cinderhold: props")
+
+
 func _build_props() -> void:
 	var done := {}
 	for y in H:
-		await _step(0.76 + 0.13 * y / H)
+		await _step(0.86 + 0.03 * y / H)
 		for x in W:
 			var ch := _ch(x, y)
 			var c := Vector3(x + 0.5, 0, y + 0.5)
@@ -375,10 +357,6 @@ func _build_props() -> void:
 					_add_box(c + Vector3(0, 1.2, 0), Vector3(0.25, 2.4, 0.25))
 					var arm := Vector3(0.42, 2.0, -0.05).rotated(Vector3.UP, jitter * 4.0)
 					_add_light(c + arm, Color("ffb066"), 7.0, 1.6)
-				"V":
-					vents.append({"cell": Vector2i(x, y), "pos": c})
-					_place_mesh(M.vent(), c + Vector3(0, 0.005, 0), _rng.randf() * TAU)
-					_add_embers_vent(c)
 				"S":
 					player_spawns.append(c)
 	# skyline: ruined towers and an ash plain beyond the walls
@@ -397,6 +375,71 @@ func _build_props() -> void:
 		var r := _rng.randf_range(38.0, 70.0)
 		var p := Vector3(W / 2.0 + cos(a) * r, 0, H / 2.0 + sin(a) * r)
 		_place_mesh(M.ruin(i), p, _rng.randf() * TAU)
+
+
+## Pick this match's ash vents: VENT_QUOTA cells per zone, on open floor,
+## clear of props, doors and the players' spawn, and spread apart. The same
+## seed gives the same vents on every peer.
+func _place_vents() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _vent_seed
+	var blocked := {}
+	for it in PLACEMENTS:
+		blocked[it.cell] = true
+		blocked[it.cell + Vector2i(roundi(it.face.x), roundi(it.face.z))] = true
+	var picked: Array[Vector2i] = []
+	for zone in VENT_QUOTA:
+		var cands: Array[Vector2i] = []
+		for y in range(1, H - 1):
+			for x in range(1, W - 1):
+				var c := Vector2i(x, y)
+				if _zone_of(c) != zone or not ",;.:".contains(_ch(x, y)) or blocked.has(c):
+					continue
+				var open := true
+				for d in NEIGH:
+					var ch := _ch(x + d.x, y + d.y)
+					if DOORS.has(ch) or not (",;.:S#".contains(ch)):
+						open = false   # keep doorways and props clear
+						break
+				if not open:
+					continue
+				var far := true
+				for s in player_spawns:
+					if Vector2(s.x, s.z).distance_to(Vector2(x + 0.5, y + 0.5)) < 7.0:
+						far = false
+				if far:
+					cands.append(c)
+		for k in VENT_QUOTA[zone]:
+			var best := Vector2i(-1, -1)
+			var best_d := -1.0
+			# best of a few random tries: as far from the other vents as we can
+			for t in 12:
+				if cands.is_empty():
+					break
+				var c: Vector2i = cands[rng.randi() % cands.size()]
+				var d := 99.0
+				for p in picked:
+					d = minf(d, Vector2(c).distance_to(Vector2(p)))
+				if d > best_d:
+					best_d = d
+					best = c
+			if best.x < 0:
+				continue
+			picked.append(best)
+			cands.erase(best)
+	if Settings.bot_driving():
+		print("VENTS seed %d: %s" % [_vent_seed, picked])
+	for c in picked:
+		var pos := cell_center(c)
+		vents.append({"cell": c, "pos": pos})
+		_place_mesh(M.vent(), pos + Vector3(0, 0.005, 0), rng.randf() * TAU)
+		_add_embers_vent(pos)
+
+
+func _zone_of(c: Vector2i) -> String:
+	if c.y < 13:
+		return "barracks" if c.x < 19 else "hall"
+	return "court" if c.x < 23 else "garden"
 
 
 func _add_light(pos: Vector3, color: Color, rng_m: float, energy: float, shadows := true) -> OmniLight3D:

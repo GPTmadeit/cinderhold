@@ -5,7 +5,7 @@ config_version=5
 
 config/name="Cinderhold"
 config/description="Co-op voxel wave survival. Hold the line until dawn."
-config/version="0.1.5"
+config/version="0.2.0"
 run/main_scene="res://scenes/boot.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"

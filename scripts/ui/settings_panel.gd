@@ -126,12 +126,14 @@ func _gameplay_tab() -> void:
 		colors.add_child(b)
 	_row(v, "Colour", colors)
 	_row(v, "Mouse sensitivity", _slider("gameplay", "sensitivity", 0.1, 4.0, 0.05))
+	_row(v, "Aim sensitivity", _slider("gameplay", "aim_sensitivity", 0.1, 2.0, 0.05, "%.2f×"))
 	_row(v, "Field of view", _slider("gameplay", "fov", 60, 110, 1, "%d°"))
 	_row(v, "Invert look", _check("gameplay", "invert_y"))
 	_row(v, "Show FPS", _check("gameplay", "show_fps"))
 	_row(v, "Touch controls", _options("gameplay", "touch_controls", ["Automatic", "Always on", "Off"], ["auto", "on", "off"]))
 	_row(v, "Touch look speed", _slider("gameplay", "touch_look", 0.2, 3.0, 0.05))
 	_row(v, "Touch aim assist", _check("gameplay", "aim_assist"))
+	_row(v, "Open co-op port (UPnP)", _check("net", "upnp", "Ask the router when hosting"))
 
 
 func _video_tab() -> void:

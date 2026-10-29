@@ -84,6 +84,10 @@ jobs:
       - name: Check audio loops
         run: godot --headless --path . res://tests/audio_loops.tscn
 
+      # Joining a friend must refuse anyone holding a different certificate.
+      - name: Check encryption pinning
+        run: godot --headless --path . res://tests/dtls_pinning.tscn
+
       - name: Export
         env:
           GODOT_ANDROID_KEYSTORE_RELEASE_USER: cinderhold

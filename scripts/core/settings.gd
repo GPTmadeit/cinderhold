@@ -11,11 +11,11 @@ const PATH := "user://settings.cfg"
 
 const DEFAULTS := {
 	"player": {"name": "", "color": 0},
-	"gameplay": {"sensitivity": 1.0, "invert_y": false, "fov": 80.0, "show_fps": false,
+	"gameplay": {"sensitivity": 1.0, "aim_sensitivity": 0.8, "invert_y": false, "fov": 80.0, "show_fps": false,
 		"aim_assist": true, "touch_controls": "auto", "touch_look": 1.0},
 	"video": {"fullscreen": false, "vsync": true, "quality": 2, "render_scale": 1.0, "max_fps": 0},
 	"audio": {"master": 0.8, "sfx": 0.9, "music": 0.55},
-	"net": {"last_ip": "127.0.0.1", "port": 47820},
+	"net": {"last_ip": "127.0.0.1", "port": 47820, "upnp": true},
 	"updates": {"token": "", "auto_check": true},
 }
 
@@ -24,7 +24,7 @@ const ACTIONS := {
 	"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
 	"jump": KEY_SPACE, "sprint": KEY_SHIFT, "crouch": KEY_C,
 	"fire": "mouse_1", "aim": "mouse_2", "reload": KEY_R, "interact": KEY_E,
-	"melee": KEY_V, "next_weapon": "mouse_wheel_up", "prev_weapon": "mouse_wheel_down",
+	"melee": KEY_V, "grenade": KEY_G, "next_weapon": "mouse_wheel_up", "prev_weapon": "mouse_wheel_down",
 	"weapon_1": KEY_1, "weapon_2": KEY_2, "weapon_3": KEY_3,
 	"scoreboard": KEY_TAB, "pause": KEY_ESCAPE,
 }
@@ -32,13 +32,14 @@ const ACTION_LABELS := {
 	"move_forward": "Move forward", "move_back": "Move back", "move_left": "Strafe left",
 	"move_right": "Strafe right", "jump": "Jump", "sprint": "Sprint", "crouch": "Crouch",
 	"fire": "Fire", "aim": "Aim down sights", "reload": "Reload", "interact": "Interact / revive",
-	"melee": "Melee", "next_weapon": "Next weapon", "prev_weapon": "Previous weapon",
+	"melee": "Melee", "grenade": "Throw grenade", "next_weapon": "Next weapon", "prev_weapon": "Previous weapon",
 	"weapon_1": "Weapon slot 1", "weapon_2": "Weapon slot 2", "weapon_3": "Weapon slot 3",
 	"scoreboard": "Scoreboard", "pause": "Pause",
 }
 const PAD := {
 	"jump": JOY_BUTTON_A, "reload": JOY_BUTTON_X, "interact": JOY_BUTTON_X, "melee": JOY_BUTTON_RIGHT_STICK,
 	"sprint": JOY_BUTTON_LEFT_STICK, "crouch": JOY_BUTTON_B, "next_weapon": JOY_BUTTON_Y,
+	"grenade": JOY_BUTTON_LEFT_SHOULDER,
 	"scoreboard": JOY_BUTTON_BACK, "pause": JOY_BUTTON_START,
 }
 
@@ -113,9 +114,10 @@ func can_capture_mouse() -> bool:
 	return not ("--shot" in a or "--fps-log" in a or "--bot" in a)
 
 
-## A scripted bot is driving the local player (dev smoke tests).
+## A scripted bot or action list is driving the local player (dev tests).
 func bot_driving() -> bool:
-	return "--bot" in OS.get_cmdline_user_args()
+	var a := OS.get_cmdline_user_args()
+	return "--bot" in a or "--act" in a
 
 
 func use_touch() -> bool:

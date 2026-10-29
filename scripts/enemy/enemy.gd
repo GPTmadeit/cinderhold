@@ -5,11 +5,15 @@ extends CharacterBody3D
 
 const Prof := preload("res://scripts/core/prof.gd")
 const M := preload("res://scripts/voxel/models.gd")
+const A := preload("res://scripts/game/rig_anim.gd")
 
+## speed: metres per second in round 1 (the match scales it up a little
+## every round, see game.gd); max_speed: never faster than this, so a
+## sprinting survivor can always break away.
 const STATS := {
-	"husk": {"speeds": [1.5, 3.1, 5.0], "damage": 45.0, "reach": 1.35, "windup": 0.55, "radius": 0.33, "height": 1.85},
-	"runner": {"speeds": [5.6], "damage": 35.0, "reach": 1.3, "windup": 0.4, "radius": 0.3, "height": 1.8},
-	"brute": {"speeds": [2.2], "damage": 90.0, "reach": 2.0, "windup": 0.9, "radius": 0.55, "height": 2.7},
+	"husk": {"speed": 1.5, "max_speed": 4.6, "damage": 45.0, "reach": 1.35, "windup": 0.55, "radius": 0.33, "height": 1.85},
+	"runner": {"speed": 3.0, "max_speed": 6.0, "damage": 35.0, "reach": 1.3, "windup": 0.4, "radius": 0.3, "height": 1.8},
+	"brute": {"speed": 2.0, "max_speed": 3.4, "damage": 90.0, "reach": 2.0, "windup": 0.9, "radius": 0.55, "height": 2.7},
 }
 
 enum Anim { MOVE, ATTACK, RISE, IDLE }
@@ -18,7 +22,6 @@ var game: Node
 var enemy_id := 0
 var kind := "husk"
 var hp := 100.0
-var tier := 0
 var anim := Anim.RISE
 var move_speed := 0.0
 var dying := false
@@ -38,21 +41,21 @@ var _stuck_t := 0.0
 var _last_pos := Vector3.ZERO
 var _target: Node
 var _enraged := false
+var _flinch := 0.0
 var _snaps: Array = []        # [time, pos, yaw, anim, speed]
 var _rng := RandomNumberGenerator.new()
 
 
-func setup(g: Node, id: int, k: String, variant: int, pos: Vector3, health: float, speed_tier: int) -> void:
+## `speed_mult` is the round's speed multiplier (1.0 in round 1).
+func setup(g: Node, id: int, k: String, variant: int, pos: Vector3, health: float, speed_mult: float) -> void:
 	game = g
 	enemy_id = id
 	kind = k
 	add_to_group("enemies")
 	hp = health
-	tier = speed_tier
 	_rng.seed = id * 977
 	_stats = STATS[k]
-	var speeds: Array = _stats.speeds
-	_speed = speeds[mini(tier, speeds.size() - 1)] * _rng.randf_range(0.92, 1.08)
+	_speed = minf(_stats.speed * speed_mult, _stats.max_speed) * _rng.randf_range(0.92, 1.08)
 	global_position = pos
 	rotation.y = _rng.randf() * TAU
 	collision_layer = 4
@@ -78,16 +81,10 @@ func setup(g: Node, id: int, k: String, variant: int, pos: Vector3, health: floa
 	_model = Node3D.new()
 	add_child(_model)
 	var parts: Dictionary = M.brute() if k == "brute" else M.husk(k, variant)
-	for pname in parts:
-		var pivot := Node3D.new()
-		pivot.position = parts[pname].joint
-		var mi := MeshInstance3D.new()
-		mi.mesh = parts[pname].mesh
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if Settings.quality() >= 2 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		pivot.add_child(mi)
-		_model.add_child(pivot)
-		_parts[pname] = pivot
-		_meshes.append(mi)
+	var shadows := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if Settings.quality() >= 2 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_parts = M.instance_rig(parts, _model, func(mi: MeshInstance3D):
+		mi.cast_shadow = shadows
+		_meshes.append(mi))
 	_model.position.y = -_stats.height
 	_groan_t = _rng.randf_range(1.0, 5.0)
 	_last_pos = pos
@@ -325,51 +322,45 @@ func _interpolate() -> void:
 # Animation (all peers)
 # =========================================================================
 
+## Enemy footsteps share a budget (a few per second across the whole
+## horde) so a big wave can't crowd gunfire out of the sound pool.
+static var _step_budget := 0.0
+static var _budget_frame := -1
+const STEPS_PER_SECOND := 7.0
+
+
 func _animate(dt: float) -> void:
-	_model.position.y = lerpf(-_stats.height, 0.0, ease(_rise, 0.4))
-	var spd := move_speed
-	var runner := kind == "runner" or spd > 4.0
-	_phase += dt * (2.0 + spd * 1.9)
-	var swing := clampf(spd / 3.0, 0.15, 1.0) * (0.9 if runner else 0.55)
-	var s := sin(_phase)
-	var legs := [_parts.get("leg_l"), _parts.get("leg_r")]
-	legs[0].rotation.x = s * swing
-	legs[1].rotation.x = -s * swing
-	var torso: Node3D = _parts.torso
-	var head: Node3D = _parts.head
-	var lean := 0.12 + (0.35 if runner else 0.05)
-	torso.rotation.x = -lean + absf(s) * 0.05
-	torso.position.y = _parts_base_y("torso") + absf(s) * 0.03
-	head.rotation.z = sin(_phase * 0.37) * 0.15
-	head.rotation.x = -0.15 + sin(_phase * 0.5) * 0.1
-	var al: Node3D = _parts.arm_l
-	var ar: Node3D = _parts.arm_r
-	if _attack_t >= 0.0:
-		var w: float = clampf(_attack_t / _stats.windup, 0.0, 1.0)
-		var raise := -2.7 * ease(w, 0.5) if w < 0.85 else lerpf(-2.7, -0.7, (w - 0.85) / 0.15)
-		al.rotation.x = raise
-		ar.rotation.x = raise
-	elif kind == "brute":
-		al.rotation.x = -s * 0.5 - 0.2
-		ar.rotation.x = s * 0.5 - 0.2
-	elif runner:
-		al.rotation.x = s * 1.1 + 0.3
-		ar.rotation.x = -s * 1.1 + 0.3
-	else:
-		# the classic shambling reach
-		al.rotation.x = -1.35 + sin(_phase * 0.8) * 0.12
-		ar.rotation.x = -1.25 + sin(_phase * 0.8 + 1.3) * 0.12
-	al.rotation.z = 0.08
-	ar.rotation.z = -0.08
+	var brute := kind == "brute"
+	# cadence follows speed, so feet don't skate
+	var before := _phase
+	_phase += dt * (0.8 + move_speed * (2.2 if brute else 2.9))
+	if move_speed > 0.4 and _rise >= 1.0 and floori(_phase / PI) != floori(before / PI):
+		_footstep(brute)
+	_flinch = maxf(_flinch - dt * 3.5, 0.0)
+	A.enemy_pose(_parts, _model, kind, _stats.height, {
+		"phase": _phase, "t": Time.get_ticks_msec() * 0.001 + float(enemy_id) * 1.7, "speed": move_speed,
+		"rise": _rise, "attack": clampf(_attack_t / _stats.windup, 0.0, 1.0) if _attack_t >= 0.0 else -1.0,
+		"flinch": _flinch}, dt)
 
 
-var _base_y := {}
-
-
-func _parts_base_y(pname: String) -> float:
-	if not _base_y.has(pname):
-		_base_y[pname] = (_parts[pname] as Node3D).position.y
-	return _base_y[pname]
+func _footstep(brute: bool) -> void:
+	var frame := Engine.get_physics_frames()
+	if frame != _budget_frame:
+		_step_budget = minf(_step_budget + STEPS_PER_SECOND * (frame - _budget_frame) / float(Engine.physics_ticks_per_second), 3.0) \
+			if _budget_frame >= 0 else 1.0
+		_budget_frame = frame
+	var me = game.local_player
+	if _step_budget < 1.0 or me == null or not is_instance_valid(me):
+		return
+	var d: float = me.global_position.distance_to(global_position)
+	if d > (22.0 if brute else 13.0):
+		return
+	_step_budget -= 1.0
+	var surface: String = game.arena.surface_at(global_position)
+	Sfx.play_at("step_%s%d" % [surface, _rng.randi_range(0, 2)], global_position,
+		2.0 if brute else (-6.0 if kind == "runner" else -9.0), 0.1)
+	if brute:
+		Sfx.play_at("land", global_position, -3.0, 0.1)
 
 
 # =========================================================================
@@ -379,6 +370,7 @@ func _parts_base_y(pname: String) -> float:
 ## Instant local feedback for the shooter, before the host confirms.
 func local_hit(point: Vector3, head: bool) -> void:
 	_flash = 1.0
+	_flinch = 1.0
 	_flash_sent = 1.0
 	Sfx.play_at("flesh", point, -2.0)
 	_burst(point, head)
@@ -405,8 +397,13 @@ func die(headshot: bool) -> void:
 	tw.set_parallel(true)
 	tw.tween_property(_model, "rotation:x", PI * 0.5 * dir * 0.98, 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tw.tween_property(_model, "position:y", 0.15, 0.55)
-	tw.tween_property(_parts.arm_l, "rotation:x", -2.6, 0.4)
-	tw.tween_property(_parts.arm_r, "rotation:x", -2.2, 0.45)
+	# limbs fly up and go limp as it falls
+	tw.tween_property(_parts.arm_l, "rotation", Vector3(2.4, 0.3, -0.5), 0.4)
+	tw.tween_property(_parts.arm_r, "rotation", Vector3(2.0, -0.3, 0.5), 0.45)
+	tw.tween_property(_parts.fore_l, "rotation:x", 0.9, 0.4)
+	tw.tween_property(_parts.fore_r, "rotation:x", 0.4, 0.45)
+	tw.tween_property(_parts.shin_l, "rotation:x", -1.1, 0.5)
+	tw.tween_property(_parts.head, "rotation:x", 0.5 * dir, 0.4)
 	tw.chain().tween_method(_set_dissolve, 0.0, 1.0, 1.2).set_delay(0.5)
 	tw.chain().tween_callback(queue_free)
 

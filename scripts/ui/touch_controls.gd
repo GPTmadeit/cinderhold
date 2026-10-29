@@ -17,6 +17,7 @@ const BUTTONS := [
 	["melee", "MELEE", Vector2(-410, -70), 40.0],
 	["next_weapon", "SWAP", Vector2(-240, -400), 40.0],
 	["crouch", "DUCK", Vector2(-100, -470), 36.0],
+	["grenade", "NADE", Vector2(-380, -330), 38.0],
 ]
 
 var _move_finger := -1
@@ -106,7 +107,7 @@ func _press(action: String) -> void:
 	ev.action = action
 	ev.pressed = true
 	Input.parse_input_event(ev)
-	if action in ["reload", "interact", "melee", "next_weapon", "jump"]:
+	if action in ["reload", "interact", "melee", "grenade", "next_weapon", "jump"]:
 		var up := InputEventAction.new()
 		up.action = action
 		up.pressed = false

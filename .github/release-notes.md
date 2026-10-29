@@ -21,4 +21,9 @@ The next launch shows a notice on the main menu with a **Copy report** button. T
 
 ### Playing together
 
-One player picks **Host Co-op**. Friends pick **Join Co-op** and enter the host's address, which can be a LAN, ZeroTier or Tailscale IP. The game uses UDP port **47820**.
+One player picks **Host Co-op**. Friends pick **Join Co-op** and enter the host's address. The game uses UDP port **47820**.
+
+- The host's lobby shows their **internet address** with a Copy button, and the game asks the router to open the port by itself (UPnP). If the router won't, the lobby explains how to forward the port by hand, or use a LAN, ZeroTier or Tailscale address instead.
+- **Friends**: share the friend code from Main menu → Friends, or press **+ Friend** in a lobby. Friends you've played with can be joined from the list in one click.
+- All co-op traffic is encrypted. Joining a friend from the list also checks it's really them.
+- Everyone needs the same version to play together, so update before a session.

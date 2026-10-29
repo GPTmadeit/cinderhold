@@ -146,9 +146,106 @@ func _fx_demo(dt: float) -> void:
 		game.fx_root.burst(at - Vector3.UP * 0.4, true)
 
 
+## --cam x,z,yaw,pitch: hold the local player at a spot looking a set way
+## (degrees), for before/after screenshots.
+func _dev_cam() -> void:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--cam")
+	var game := get_tree().current_scene
+	if i == -1 or i + 1 >= args.size() or game == null or not "local_player" in game or game.local_player == null:
+		return
+	if _acts_done.has("jumpfwd@" + str(_jump_at())):
+		return
+	var v := args[i + 1].split_floats(",")
+	var p = game.local_player
+	p.global_position = Vector3(v[0], 0.0, v[1])
+	p.velocity = Vector3.ZERO
+	p.yaw = deg_to_rad(v[2]) if v.size() > 2 else p.yaw
+	p.pitch = deg_to_rad(v[3]) if v.size() > 3 else p.pitch
+
+
+## --act kestrel@4,aim@5,melee@6.5,grenade@8: scripted actions for
+## screenshots ("aim" holds aim down sights from then on; a weapon id hands
+## that gun over).
+var _acts_done := {}
+const W_DEFS := preload("res://scripts/game/weapons.gd").DEFS
+
+
+func _dev_acts() -> void:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--act")
+	var game := get_tree().current_scene
+	# "host@3" presses Host Co-op on the main menu (the real path, unlike --host)
+	if i != -1 and i + 1 < args.size() and game and game.has_method("_host"):
+		for item in args[i + 1].split(","):
+			if item.begins_with("host@") and not _acts_done.has(item) and _t >= float(item.get_slice("@", 1)):
+				_acts_done[item] = true
+				game._host()
+	if i == -1 or i + 1 >= args.size() or game == null or not "local_player" in game or game.local_player == null:
+		return
+	var p = game.local_player
+	for item in args[i + 1].split(","):
+		var parts := item.split("@")
+		if parts.size() != 2 or _acts_done.has(item) or _t < float(parts[1]):
+			continue
+		_acts_done[item] = true
+		match parts[0]:
+			"aim": Input.action_press("aim")
+			"melee": p._melee()
+			"grenade": p._throw_grenade()
+			"reload": p._start_reload()
+			"down": p._go_down()
+			"revive": set_meta("reviving", true)
+			"blasttest":
+				# a grenade going off a metre from the first live enemy
+				for e in game.enemies.values():
+					if not e.dying:
+						var hp_before: float = e.hp
+						game.grenade_blast(e.global_position + Vector3(1.0, 0.15, 0.0), p.peer_id, 4.6)
+						print("BLASTTEST enemy hp %.0f -> %.0f dying=%s" % [hp_before, e.hp, e.dying or not game.enemies.has(e.enemy_id)])
+						break
+			"jumpfwd":
+				# run and jump forward, then report where we ended up
+				Input.action_press("move_forward")
+				Input.action_press("jump")
+				get_tree().create_timer(0.15).timeout.connect(func(): Input.action_release("jump"))
+				get_tree().create_timer(0.5).timeout.connect(func(): Input.action_release("move_forward"))
+				get_tree().create_timer(1.5).timeout.connect(func():
+					print("JUMP ended at %s on_floor=%s" % [p.global_position.snappedf(0.01), p.is_on_floor()]))
+			"bleed":
+				p.bleed_t = 0.05        # bleed out now: dead, spectating a teammate
+			"respawn":
+				p.on_round_start()
+				var r: Vector3 = p.head.rotation
+				print("RESPAWN head rotation %.3f %.3f %.3f top_level=%s" % [r.x, r.y, r.z, p.head.top_level])
+			_:
+				if W_DEFS.has(parts[0]):
+					p.receive_weapon(parts[0], false, false)   # e.g. kestrel@4: hand over a gun
+	if has_meta("reviving"):
+		# stand by the first downed teammate and hold interact
+		for o in game.player_nodes():
+			if o != p and o.is_downed():
+				p.global_position = o.global_position + Vector3(0.8, 0, 0)
+				Input.action_press("interact")
+				break
+
+
+func _jump_at() -> String:
+	var args := OS.get_cmdline_user_args()
+	var i := args.find("--act")
+	if i == -1 or i + 1 >= args.size():
+		return ""
+	for item in args[i + 1].split(","):
+		if item.begins_with("jumpfwd@"):
+			return item.get_slice("@", 1)
+	return ""
+
+
 func _process(dt: float) -> void:
 	_t += dt
 	_dev_ui()
+	_dev_cam()
+	_dev_acts()
 	_perf_log(dt)
 	_fx_demo(dt)
 	if _t > 3.0:
@@ -249,6 +346,8 @@ func _physics_process(dt: float) -> void:
 			owned.append(w.id)
 		game.request("cache", "cache", owned))
 	_bot_once(10.0, "cache_take", func(): game.request("cache", "cache", []))
+	_bot_once(7.0, "grenade", func(): p._throw_grenade())
+	_bot_once(8.5, "melee", func(): p._melee())
 	_bot_once(12.0, "forge", func():
 		var w: Dictionary = p.weapon()
 		game.request("forge", "forge", [w.id, w.upgraded]))
@@ -367,8 +466,8 @@ func _bot_report(game: Node, p: Node) -> void:
 	_win_proc_max = 0.0
 	_win_phys_sum = 0.0
 	_win_n = 0
-	print("BOT t=%.0f round=%d phase=%s alive=%d pts=%d kills=%d hs=%d hp=%.0f/%.0f down=%s weapon=%s%s %s/%s perks=%s doors=%s" % [
+	print("BOT t=%.0f round=%d phase=%s alive=%d pts=%d kills=%d hs=%d hp=%.0f/%.0f down=%s weapon=%s%s %s/%s nades=%d perks=%s doors=%s" % [
 		_bot_t, game.round_num, game.phase, game.enemies.size(), game.points.get(p.peer_id, 0),
 		s.get("kills", 0), s.get("headshots", 0), p.hp, p.max_hp, p.downed,
-		w.get("id", "-"), "+" if w.get("upgraded", false) else "", w.get("mag", 0), w.get("reserve", 0),
+		w.get("id", "-"), "+" if w.get("upgraded", false) else "", w.get("mag", 0), w.get("reserve", 0), p.grenades,
 		",".join(p.perks), ",".join(game.arena.doors.keys().filter(func(k): return game.arena.doors[k].open))])

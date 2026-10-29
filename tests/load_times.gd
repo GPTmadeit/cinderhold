@@ -7,7 +7,7 @@ func _ready() -> void:
 	print("sfx synth ", Time.get_ticks_msec() - t, " ms"); t = Time.get_ticks_msec()
 	var a = preload("res://scripts/world/arena.gd").new()
 	add_child(a)
-	a.build(true)
+	await a.build(true)
 	print("arena build ", Time.get_ticks_msec() - t, " ms"); t = Time.get_ticks_msec()
 	var M = preload("res://scripts/voxel/models.gd")
 	for v in 5:

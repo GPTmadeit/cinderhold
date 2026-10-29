@@ -213,8 +213,8 @@ func _download(asset_api_url: String) -> Dictionary:
 		for h in res.headers:
 			if h.to_lower().begins_with("location:"):
 				loc = h.substr(9).strip_edges()
-		if loc == "":
-			break
+		if not loc.begins_with("https://"):
+			break   # every hop stays encrypted; never follow a redirect to plain http
 		res = await _http_get(loc, false, true)
 		hops += 1
 	return res

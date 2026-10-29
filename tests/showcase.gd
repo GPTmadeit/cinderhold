@@ -34,15 +34,11 @@ func _ready() -> void:
 		var root := Node3D.new()
 		root.position = Vector3(x, 0, 0)
 		root.rotation.y = -0.35
-		for pname in parts:
-			var pv := Node3D.new()
-			pv.position = parts[pname].joint
-			var mi := MeshInstance3D.new()
-			mi.mesh = parts[pname].mesh
-			pv.add_child(mi)
-			root.add_child(pv)
-			if pname.begins_with("arm") and spec[0] != "survivor":
-				pv.rotation.x = -1.2
+		var pv := M.instance_rig(parts, root)
+		if spec[0] != "survivor":
+			pv.arm_l.rotation.x = 1.3     # reaching forward
+			pv.arm_r.rotation.x = 1.2
+			pv.fore_l.rotation.x = 0.3
 		add_child(root)
 		x += 2.0 if spec[0] != "brute" else 2.4
 	var gx := -3.6

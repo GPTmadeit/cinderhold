@@ -19,6 +19,7 @@ const POOLS := {
 	"blast": [6, 24, 0.45, 1.0, 180.0, 1.0, 6.0, 0.5, 1.0],
 	"burst": [16, 8, 0.6, 0.95, 80.0, 1.5, 4.0, 0.6, 1.2],
 	"burst_big": [8, 18, 0.6, 0.95, 80.0, 1.5, 4.0, 0.6, 1.2],
+	"fireball": [4, 48, 0.8, 1.0, 180.0, 2.0, 7.5, 1.5, 3.2],
 }
 const TRACERS := 32
 const LIGHTS := 4
@@ -31,6 +32,7 @@ var _tracer_mats: Array[StandardMaterial3D] = []   # [normal, hot]
 var _next_tracer := 0
 var _lights: Array[OmniLight3D] = []
 var _light_t := PackedFloat32Array()
+var _light_e := PackedFloat32Array()   # each flash's starting energy
 var _next_light := 0
 
 
@@ -62,13 +64,14 @@ func _ready() -> void:
 		add_child(l)
 		_lights.append(l)
 	_light_t.resize(LIGHTS)
+	_light_e.resize(LIGHTS)
 
 
 func _make_pool(pool: String) -> Array[CPUParticles3D]:
 	var cfg: Array = POOLS[pool]
 	var mesh := BoxMesh.new()
-	if pool.begins_with("burst"):
-		mesh.size = Vector3(0.05, 0.05, 0.05)
+	if pool.begins_with("burst") or pool == "fireball":
+		mesh.size = Vector3(0.05, 0.05, 0.05) if pool != "fireball" else Vector3(0.09, 0.09, 0.09)
 		mesh.material = ArenaScript.particle_material()
 	else:
 		mesh.size = Vector3(0.035, 0.035, 0.035)
@@ -76,7 +79,7 @@ func _make_pool(pool: String) -> Array[CPUParticles3D]:
 		m.vertex_color_use_as_albedo = true
 		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED if pool == "blast" else BaseMaterial3D.SHADING_MODE_PER_PIXEL
 		mesh.material = m
-	var ramp := ArenaScript.fire_gradient() if pool.begins_with("burst") else null
+	var ramp := ArenaScript.fire_gradient() if (pool.begins_with("burst") or pool == "fireball") else null
 	var out: Array[CPUParticles3D] = []
 	for i in int(cfg[0]):
 		var p := CPUParticles3D.new()
@@ -90,7 +93,10 @@ func _make_pool(pool: String) -> Array[CPUParticles3D]:
 		p.initial_velocity_max = cfg[6]
 		p.scale_amount_min = cfg[7]
 		p.scale_amount_max = cfg[8]
-		p.gravity = Vector3(0, -9, 0)
+		p.gravity = Vector3(0, 2.5, 0) if pool == "fireball" else Vector3(0, -9, 0)
+		if pool == "fireball":
+			p.damping_min = 4.0
+			p.damping_max = 7.0
 		p.mesh = mesh
 		if ramp:
 			p.color_ramp = ramp
@@ -147,12 +153,26 @@ func arc(from: Vector3, to: Vector3, rng: RandomNumberGenerator) -> void:
 func impact(pos: Vector3, normal: Vector3, big := false) -> void:
 	_emit("blast" if big else "spark", pos + normal * 0.02, normal)
 	if big:
-		var i := _next_light
-		_next_light = (i + 1) % LIGHTS
-		_lights[i].position = pos + normal * 0.3
-		_lights[i].light_energy = 4.0
-		_lights[i].visible = true
-		_light_t[i] = LIGHT_LIFE
+		_flash(pos + normal * 0.3, 4.0, 6.0)
+
+
+## A grenade going off: a fireball, flying debris, embers and a bright flash.
+func blast(pos: Vector3) -> void:
+	_emit("fireball", pos, Vector3.UP)
+	_emit("blast", pos, Vector3.UP)
+	_emit("burst_big", pos + Vector3.UP * 0.3, Vector3.UP)
+	_flash(pos + Vector3.UP * 0.6, 12.0, 11.0)
+
+
+func _flash(pos: Vector3, energy: float, range_m: float) -> void:
+	var i := _next_light
+	_next_light = (i + 1) % LIGHTS
+	_lights[i].position = pos
+	_lights[i].omni_range = range_m
+	_lights[i].light_energy = energy
+	_lights[i].visible = true
+	_light_t[i] = LIGHT_LIFE
+	_light_e[i] = energy
 
 
 ## Embers spraying from a wounded Husk.
@@ -184,4 +204,4 @@ func _process(dt: float) -> void:
 			if _light_t[i] <= 0.0:
 				_lights[i].visible = false
 			else:
-				_lights[i].light_energy = 4.0 * _light_t[i] / LIGHT_LIFE
+				_lights[i].light_energy = _light_e[i] * _light_t[i] / LIGHT_LIFE

@@ -173,7 +173,7 @@ func _chord(notes: Array, dur: float, wave := "tri", decay := 0.6, gain := 0.25,
 	return out
 
 
-const SOUND_COUNT := 44
+const SOUND_COUNT := 55
 
 
 func _put(sound: String, stream: AudioStreamWAV) -> void:
@@ -212,8 +212,27 @@ func _generate() -> void:
 	_put("round_end", _wav(_seq([[_chord([220, 277.2, 329.6], 2.5, "tri", 1.0, 0.18, 0.12), 0.0], [_chord([246.9, 329.6, 392], 2.5, "tri", 1.2, 0.16, 0.12), 0.7]])))
 	_put("powerup_spawn", _wav(_seq([[_tone(0.6, 600, 1200, "sine", 0.01, 0.3, 0.3), 0.0], [_tone(0.6, 900, 1800, "sine", 0.01, 0.3, 0.2), 0.08]])))
 	_put("powerup", _wav(_chord([523.3, 659.3, 784, 1046.5], 0.9, "tri", 0.35, 0.22, 0.06)))
-	_put("step0", _wav(_noise(0.12, 600, 0.002, 0.03, 0.35)))
-	_put("step1", _wav(_noise(0.12, 750, 0.002, 0.028, 0.35)))
+	# Footsteps, three takes per surface. Most of their energy sits between
+	# 1 and 5 kHz so phone speakers play them (the old ones were a 600 Hz
+	# thump that phones couldn't reproduce at all).
+	for i in 3:
+		var p := 1.0 + i * 0.07
+		_put("step_stone%d" % i, _wav(_seq([[_noise(0.09, 2600 * p, 0.0005, 0.016, 0.9, true), 0.0],
+			[_tone(0.08, 170 * p, 110, "sine", 0.001, 0.02, 0.45), 0.0],
+			[_noise(0.07, 4200 * p, 0.003, 0.02, 0.35, true), 0.018]])))
+		_put("step_wood%d" % i, _wav(_seq([[_tone(0.12, 215 * p, 165, "tri", 0.001, 0.045, 0.55), 0.0],
+			[_noise(0.09, 1500 * p, 0.001, 0.022, 0.7), 0.0],
+			[_noise(0.05, 3200, 0.001, 0.01, 0.3, true), 0.004]])))
+		_put("step_dirt%d" % i, _wav(_seq([[_noise(0.03, 3000 * p, 0.0005, 0.008, 0.55, true), 0.0],
+			[_noise(0.03, 2400 * p, 0.0005, 0.008, 0.45, true), 0.014 + i * 0.004],
+			[_noise(0.04, 2000 * p, 0.0005, 0.01, 0.4, true), 0.034],
+			[_noise(0.1, 900, 0.002, 0.03, 0.55), 0.0]])))
+	_put("land", _wav(_mix(_tone(0.22, 95, 50, "sine", 0.001, 0.07, 0.9), _noise(0.16, 1800, 0.001, 0.05, 0.8))))
+	_put("grenade_bounce", _wav(_seq([[_tone(0.18, 2250, 2200, "sine", 0.0005, 0.045, 0.35), 0.0],
+		[_tone(0.16, 3400, 3350, "sine", 0.0005, 0.03, 0.2), 0.0],
+		[_noise(0.03, 5000, 0.0005, 0.006, 0.45, true), 0.0]])))
+	_put("throw", _wav(_noise(0.3, 1600, 0.07, 0.07, 0.6, true)))
+	_put("pin", _wav(_mix(_noise(0.03, 6000, 0.0005, 0.005, 0.5, true), _tone(0.06, 3100, 2900, "square", 0.0005, 0.012, 0.14))))
 	_put("revive", _wav(_chord([392, 493.9, 587.3, 784], 1.2, "sine", 0.5, 0.2, 0.1)))
 	_put("downed", _wav(_seq([[_tone(1.6, 220, 80, "saw", 0.01, 0.8, 0.25), 0.0], [_noise(1.0, 400, 0.01, 0.5, 0.4), 0.0]])))
 	_put("cache", _wav(_chord([659.3, 784, 987.8, 1174.7, 1318.5, 1568, 1975.5], 2.0, "sine", 0.4, 0.16, 0.18)))

@@ -6,6 +6,9 @@ const T := preload("res://scripts/ui/ui_theme.gd")
 const ArenaScript := preload("res://scripts/world/arena.gd")
 const SettingsPanel := preload("res://scripts/ui/settings_panel.gd")
 const M := preload("res://scripts/voxel/models.gd")
+const A := preload("res://scripts/game/rig_anim.gd")
+const Identity := preload("res://scripts/core/identity.gd")
+const Friends := preload("res://scripts/core/friends.gd")
 const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
 const Diagnostics := preload("res://scripts/core/diagnostics.gd")
 
@@ -22,6 +25,10 @@ var _start_btn: Button
 var _ready_btn: Button
 var _update_badge: Button
 var _ip_edit: LineEdit
+var _friends_list: VBoxContainer
+var _friend_edit: LineEdit
+var _my_code: Label
+var _copy_addr: Button
 
 
 func _ready() -> void:
@@ -52,6 +59,7 @@ func _ready() -> void:
 
 	_build_main()
 	_build_join()
+	_build_friends()
 	_build_lobby()
 	_build_settings()
 	_build_footer()
@@ -131,18 +139,11 @@ func _pose_husks() -> void:
 		var root := Node3D.new()
 		root.position = spots[i]
 		root.rotation.y = randf() * TAU
-		var parts: Dictionary = M.husk("runner" if i == 2 else "husk", i)
-		var pivots := {}
-		for pname in parts:
-			var pv := Node3D.new()
-			pv.position = parts[pname].joint
-			var mi := MeshInstance3D.new()
-			mi.mesh = parts[pname].mesh
-			pv.add_child(mi)
-			root.add_child(pv)
-			pivots[pname] = pv
+		var model := Node3D.new()
+		root.add_child(model)
+		var pivots := M.instance_rig(M.husk("runner" if i == 2 else "husk", i), model)
 		add_child(root)
-		_husks.append({"root": root, "parts": pivots, "phase": randf() * TAU, "speed": randf_range(0.25, 0.45)})
+		_husks.append({"root": root, "model": model, "parts": pivots, "phase": randf() * TAU, "speed": randf_range(0.25, 0.45)})
 
 
 func _process(dt: float) -> void:
@@ -160,13 +161,8 @@ func _process(dt: float) -> void:
 		root.position += fwd * h.speed * dt
 		if root.position.distance_to(c) > 5.0:
 			root.rotation.y = lerp_angle(root.rotation.y, atan2(-(c - root.position).x, -(c - root.position).z), dt)
-		var s := sin(h.phase)
-		h.parts.leg_l.rotation.x = s * 0.45
-		h.parts.leg_r.rotation.x = -s * 0.45
-		h.parts.arm_l.rotation.x = -1.3 + sin(h.phase * 0.5) * 0.1
-		h.parts.arm_r.rotation.x = -1.2 + sin(h.phase * 0.5 + 1.0) * 0.1
-		h.parts.torso.rotation.x = -0.15
-		h.parts.head.rotation.z = sin(h.phase * 0.3) * 0.2
+		A.enemy_pose(h.parts, h.model, "husk", 1.85, {"phase": h.phase, "t": _t + float(h.speed) * 10.0,
+			"speed": h.speed * 2.0, "rise": 1.0, "attack": -1.0, "flinch": 0.0}, dt)
 
 
 # --- panels ----------------------------------------------------------------
@@ -192,6 +188,8 @@ func _show(which: String) -> void:
 		_panels[k].visible = k == which
 	if which == "lobby":
 		_refresh_lobby()
+	elif which == "friends":
+		_refresh_friends()
 
 
 func _build_main() -> void:
@@ -210,6 +208,7 @@ func _build_main() -> void:
 	_main.add_child(T.button("Play Solo", _play_solo))
 	_main.add_child(T.button("Host Co-op", _host))
 	_main.add_child(T.button("Join Co-op", func(): _show("join")))
+	_main.add_child(T.button("Friends", func(): _show("friends")))
 	_main.add_child(T.button("Settings", func(): _show("settings")))
 	_update_badge = T.button("Updates", func():
 		_show("settings")
@@ -229,18 +228,131 @@ func _build_join() -> void:
 	var v := VBoxContainer.new()
 	p.add_child(v)
 	v.add_child(T.title("JOIN A HOLD", 40))
-	v.add_child(T.label("Enter the host's address (LAN, ZeroTier or Tailscale IP).", 19, T.MUTED))
+	v.add_child(T.label("Enter the host's address: their internet address from the lobby (like 203.0.113.7:47820), or a LAN, ZeroTier or Tailscale IP.", 19, T.MUTED))
 	_ip_edit = LineEdit.new()
 	_ip_edit.text = str(Settings.get_v("net", "last_ip"))
 	_ip_edit.placeholder_text = "192.168.1.20"
 	_ip_edit.custom_minimum_size.y = 50
 	_ip_edit.text_submitted.connect(func(_t): _join())
 	v.add_child(_ip_edit)
-	v.add_child(T.label("Port %d (UDP)" % Net.port(), 18, T.MUTED))
+	v.add_child(T.label("Port %d (UDP). Connections are always encrypted. Friends you've played with can be joined from Friends." % Net.port(), 18, T.MUTED))
 	var row := HBoxContainer.new()
 	row.add_child(T.button("Connect", _join, 200))
 	row.add_child(T.button("Back", func(): _show("main"), 160))
 	v.add_child(row)
+
+
+func _build_friends() -> void:
+	var box := _panel("friends", true)
+	var p := PanelContainer.new()
+	p.custom_minimum_size = Vector2(820, 0)
+	box.add_child(p)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	p.add_child(v)
+	v.add_child(T.title("FRIENDS", 44))
+	var mine := HBoxContainer.new()
+	_my_code = T.label("", 22, T.EMBER_SOFT, true)
+	_my_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mine.add_child(_my_code)
+	mine.add_child(T.button("Copy", func():
+		DisplayServer.clipboard_set(Identity.code())
+		_my_code.text = "Your friend code: %s  (copied)" % Identity.code(), 120))
+	v.add_child(mine)
+	var help := T.label("Share your code so friends can add you. Once you've played together, joining a friend " +
+		"from this list checks it really is them. Everything you send is encrypted either way.", 18, T.MUTED)
+	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.add_child(help)
+	var add := HBoxContainer.new()
+	_friend_edit = LineEdit.new()
+	_friend_edit.placeholder_text = "Friend code, e.g. 7K2QD-M9XRA"
+	_friend_edit.custom_minimum_size = Vector2(420, 48)
+	_friend_edit.text_submitted.connect(func(_t): _add_friend_code())
+	add.add_child(_friend_edit)
+	add.add_child(T.button("Add", _add_friend_code, 120))
+	v.add_child(add)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size.y = 300
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_friends_list = VBoxContainer.new()
+	_friends_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_friends_list)
+	v.add_child(scroll)
+	v.add_child(T.button("Back", func(): _show("main"), 160))
+
+
+func _add_friend_code() -> void:
+	var code := Friends.normalize_code(_friend_edit.text)
+	if code == "":
+		_my_code.text = "That doesn't look like a friend code (10 letters and digits)."
+		return
+	if code == Identity.code():
+		_my_code.text = "That's your own code."
+		return
+	Friends.remember(code)
+	_friend_edit.text = ""
+	_refresh_friends()
+
+
+func _refresh_friends() -> void:
+	if _friends_list == null:
+		return
+	_my_code.text = "Your friend code: %s" % Identity.code() if Identity.ready() else "Making your friend code…"
+	for c in _friends_list.get_children():
+		c.queue_free()
+	var list := Friends.all()
+	if list.is_empty():
+		_friends_list.add_child(T.label("No friends yet. Add one by code, or press + Friend in a lobby.", 20, T.MUTED))
+	for f in list:
+		var row := PanelContainer.new()
+		row.add_theme_stylebox_override("panel", T.box(Color(1, 1, 1, 0.04), T.EMBER_SOFT, 0, 4, 10))
+		var h := HBoxContainer.new()
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var nm: String = f.name if str(f.name) != "" else "Friend"
+		info.add_child(T.label("%s   %s" % [nm, f.code], 22, T.TEXT, true))
+		var where := "Last hosted at %s:%d" % [f.address, int(f.port)] if str(f.address) != "" else "Hasn't hosted a game you joined yet"
+		if str(f.cert) != "":
+			where += "  ·  identity saved"
+		info.add_child(T.label(where, 16, T.MUTED))
+		h.add_child(info)
+		if str(f.address) != "":
+			var code: String = f.code
+			h.add_child(T.button("Join", func(): _join_friend(code), 110))
+		var forget_code: String = f.code
+		h.add_child(T.button("Remove", func():
+			Friends.forget(forget_code)
+			_refresh_friends(), 120))
+		row.add_child(h)
+		_friends_list.add_child(row)
+
+
+func _join_friend(code: String) -> void:
+	var f := Friends.find(code)
+	if f.is_empty() or str(f.address) == "":
+		return
+	if not await _identity_ready():
+		return
+	var err := Net.join(str(f.address), int(f.port), code)
+	if err != OK:
+		_toast("Couldn't start connecting (%s)." % error_string(err))
+		return
+	_show("main")
+	_toast("Connecting to %s…" % (f.name if str(f.name) != "" else f.address), T.EMBER_SOFT)
+
+
+## The first launch makes this install's encryption key; it takes a moment
+## on slower phones. False if the menu was left meanwhile.
+func _identity_ready() -> bool:
+	if Identity.ready():
+		return true
+	_toast("Preparing your encryption key…", T.EMBER_SOFT)
+	while not Identity.ready():
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return false
+	_toast("")
+	return true
 
 
 func _build_lobby() -> void:
@@ -254,6 +366,13 @@ func _build_lobby() -> void:
 	_lobby_info = T.label("", 19, T.MUTED)
 	_lobby_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_lobby_info)
+	_copy_addr = T.button("Copy internet address", func():
+		var ps := Net.port_status()
+		if str(ps.get("public_ip", "")) != "":
+			DisplayServer.clipboard_set("%s:%d" % [ps.public_ip, ps.port])
+			_copy_addr.text = "Copied"
+			get_tree().create_timer(2.0).timeout.connect(func(): _copy_addr.text = "Copy internet address"), 300)
+	v.add_child(_copy_addr)
 	_roster = VBoxContainer.new()
 	_roster.custom_minimum_size.y = 230
 	v.add_child(_roster)
@@ -296,6 +415,8 @@ func _play_solo() -> void:
 
 
 func _host() -> void:
+	if not await _identity_ready():
+		return
 	var err := Net.host()
 	if err != OK:
 		_toast("Couldn't host on port %d (%s). Is another copy running?" % [Net.port(), error_string(err)])
@@ -308,7 +429,13 @@ func _join() -> void:
 	if ip == "":
 		return
 	Settings.set_v("net", "last_ip", ip)
-	var err := Net.join(ip)
+	if not await _identity_ready():
+		return
+	var port := 0
+	if ip.count(":") == 1:     # "203.0.113.7:47820", as the host's Copy button gives it
+		port = int(ip.get_slice(":", 1))
+		ip = ip.get_slice(":", 0)
+	var err := Net.join(ip, port)
 	if err != OK:
 		_toast("Couldn't start connecting (%s)." % error_string(err))
 		return
@@ -318,6 +445,11 @@ func _join() -> void:
 
 func _on_net_error(reason: String) -> void:
 	_show("main")
+	var j := Net.join_info()
+	if j.get("pinned", false) and reason.begins_with("Couldn't reach"):
+		var f := Friends.find(str(j.code))
+		reason = "Couldn't connect to %s at %s. If they're hosting, check the address; if they reinstalled the game, remove them from Friends and add them again." % [
+			f.get("name", "your friend"), j.address]
 	_toast(reason)
 
 
@@ -342,9 +474,14 @@ func _refresh_lobby() -> void:
 		sw.color = Settings.PLAYER_COLORS[int(p.color) % 4]
 		sw.custom_minimum_size = Vector2(10, 30)
 		h.add_child(sw)
-		var n := T.label(str(p.name) + ("  (host)" if id == 1 else "") + ("  (you)" if id == Net.me() else ""), 24, T.TEXT, true)
+		var code := str(p.get("code", ""))
+		var friend := Friends.is_friend(code)
+		var n := T.label(str(p.name) + ("  (host)" if id == 1 else "") + ("  (you)" if id == Net.me() else "") + ("  ★ friend" if friend else ""), 24, T.TEXT, true)
 		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		h.add_child(n)
+		if code != "" and not friend and id != Net.me():
+			var pid: int = id
+			h.add_child(T.button("+ Friend", func(): _befriend(pid), 140))
 		var ready_txt := "HOST" if id == 1 else ("READY" if p.ready else "not ready")
 		h.add_child(T.label(ready_txt, 20, Color("9fe07a") if (p.ready or id == 1) else T.MUTED, true))
 		row.add_child(h)
@@ -356,11 +493,45 @@ func _refresh_lobby() -> void:
 	_ready_btn.visible = not host
 	var me: Dictionary = Net.players.get(Net.me(), {})
 	_ready_btn.text = "Not ready" if me.get("ready", false) else "Ready"
+	_copy_addr.visible = false
 	if host:
-		var addrs := Net.local_addresses()
-		_lobby_info.text = "Friends join with one of: %s  (UDP port %d)\n%d / %d survivors" % [", ".join(addrs), Net.port(), Net.players.size(), Net.MAX_PLAYERS]
+		var ps := Net.port_status()
+		var lan: String = ps.get("lan_ip", "") if str(ps.get("lan_ip", "")) != "" else ", ".join(Net.local_addresses())
+		var lines := ["On your network, friends join with: %s" % lan]
+		var pub := str(ps.get("public_ip", ""))
+		match ps.get("state", ""):
+			"working":
+				lines.append("Opening port %d on your router…" % Net.port())
+			"open":
+				lines.append("Over the internet: %s:%d  (port opened automatically)" % [pub if pub != "" else "finding your address…", Net.port()])
+			"closed":
+				var where := "Your internet address: %s:%d. " % [pub, Net.port()] if pub != "" else ""
+				var target := lan if str(ps.get("lan_ip", "")) != "" else "this computer (its address above)"
+				lines.append("%s%s To play over the internet, forward UDP port %d on your router to %s, or use Tailscale or ZeroTier." % [
+					where, ps.get("note", ""), Net.port(), target])
+		lines.append("Encrypted. Your friend code: %s    %d / %d survivors" % [Identity.code(), Net.players.size(), Net.MAX_PLAYERS])
+		_lobby_info.text = "\n".join(lines)
+		_copy_addr.visible = pub != "" and ps.get("state", "") == "open"
 	else:
-		_lobby_info.text = "Connected. Waiting for the host to start. %d / %d survivors" % [Net.players.size(), Net.MAX_PLAYERS]
+		var j := Net.join_info()
+		var security := "Encrypted and verified: this is your friend." if j.get("pinned", false) else "Encrypted."
+		_lobby_info.text = "Connected. %s Waiting for the host to start. %d / %d survivors" % [security, Net.players.size(), Net.MAX_PLAYERS]
+
+
+## Add a lobby member as a friend, with what we know of them: their
+## certificate (to check it's them next time) and, for the host, where
+## they're hosting.
+func _befriend(id: int) -> void:
+	var p: Dictionary = Net.players.get(id, {})
+	if p.is_empty():
+		return
+	var j := Net.join_info()
+	var host_id: Dictionary = Net.get_meta("host_id", {})
+	if id == 1 and host_id.get("code", "") == p.get("code", ""):
+		Friends.remember(str(p.code), str(p.name), str(host_id.get("cert", "")), str(j.get("address", "")), int(j.get("port", 0)))
+	else:
+		Friends.remember(str(p.code), str(p.name), str(p.get("cert", "")))
+	_refresh_lobby()
 
 
 func _refresh_badge() -> void:

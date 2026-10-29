@@ -8,13 +8,14 @@ const M := preload("res://scripts/voxel/models.gd")
 const W := preload("res://scripts/game/weapons.gd")
 const P := preload("res://scripts/game/perks.gd")
 const ArenaScript := preload("res://scripts/world/arena.gd")
+const A := preload("res://scripts/game/rig_anim.gd")
 
 const WALK := 4.6
 const SPRINT := 6.9
 const CROUCH := 2.4
 const AIM_WALK := 2.9
 const CRAWL := 0.9
-const JUMP := 4.6
+const JUMP := 5.6               # ~1.05 m: enough to land on crates, barrels and tables
 const GRAVITY := 15.0
 const EYE := 1.62
 const EYE_CROUCH := 1.1
@@ -23,6 +24,7 @@ const BLEED_TIME := 35.0
 const REVIVE_TIME := 3.0
 const STATE_RATE := 20.0
 const MAX_SLOTS := 2
+const MAX_GRENADES := 4
 const MASK_SHOT := 1 | 4
 
 var game: Node
@@ -61,6 +63,7 @@ var prompt := ""
 var prompt_cost := 0
 var since_hurt := 99.0
 var touch_look := Vector2.ZERO
+var grenades := 2
 
 # --- remote state ---------------------------------------------------------
 var _net_flags := 0
@@ -83,9 +86,26 @@ var _body: Node3D
 var _parts := {}
 var _tp_gun: MeshInstance3D
 var _name_label: Label3D
+# third-person animation (what other players see; also drives our own shadow)
+var _tp_phase := 0.0
+var _tp_kick := 0.0
+var _tp_melee := 0.0
+var _tp_throw := 0.0
+# first-person off hand: the knife slash and the grenade throw
+var _hand_rig: Node3D
+var _hand_knife: MeshInstance3D
+var _hand_nade: MeshInstance3D
+var _hand_anim := ""
+var _hand_t := 0.0
+var _melee_hit_t := -1.0
+var _release_t := -1.0
+var _arm_l_rest := Transform3D()
+var _shake := 0.0
 
 var _state_t := 0.0
 var _step_t := 0.0
+var _was_grounded := true
+var _fall_speed := 0.0
 var _bob_t := 0.0
 var _sway := Vector2.ZERO
 var _kick := 0.0
@@ -94,6 +114,8 @@ var _empty_clicked := false
 var _flash_t := 0.0
 var _vm_def: Dictionary = {}
 var _vm_id := ""
+var _sight: Dictionary = {}          # models.gd gun_sight() of the gun in hand
+var _reticle: MeshInstance3D
 var _rng := RandomNumberGenerator.new()
 var _last_pos := Vector3.ZERO
 
@@ -183,20 +205,13 @@ func _build_body() -> void:
 	_body = Node3D.new()
 	_body.name = "Body"
 	add_child(_body)
-	var parts: Dictionary = M.survivor(color_idx)
-	for pname in parts:
-		var pivot := Node3D.new()
-		pivot.position = parts[pname].joint
-		var mi := MeshInstance3D.new()
-		mi.mesh = parts[pname].mesh
-		pivot.add_child(mi)
-		_body.add_child(pivot)
-		_parts[pname] = pivot
+	_parts = M.instance_rig(M.survivor(color_idx), _body)
+	# the gun sits in the right hand, barrel along the forearm
 	_tp_gun = MeshInstance3D.new()
-	_tp_gun.position = Vector3(0, -0.62, -0.05)
-	_tp_gun.rotation.x = PI * 0.5
+	_tp_gun.position = Vector3(0, -0.3, -0.04)
+	_tp_gun.rotation.x = -PI * 0.5
 	_tp_gun.scale = Vector3.ONE * 1.4
-	_parts.arm_r.add_child(_tp_gun)
+	_parts.fore_r.add_child(_tp_gun)
 	_name_label = Label3D.new()
 	_name_label.font = preload("res://assets/fonts/Rajdhani-Bold.ttf")
 	_name_label.font_size = 48
@@ -237,6 +252,24 @@ func _build_viewmodel() -> void:
 		a.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		viewmodel.add_child(a)
 		_viewmodel_materials(a)
+	# the off hand for melee and throws, posed in camera space
+	_hand_rig = Node3D.new()
+	_hand_rig.scale = Vector3.ONE * 0.6
+	_hand_rig.visible = false
+	camera.add_child(_hand_rig)
+	var hand_arm := MeshInstance3D.new()
+	hand_arm.mesh = arms.l
+	_hand_knife = MeshInstance3D.new()
+	_hand_knife.mesh = M.knife()
+	_hand_knife.position = Vector3(0.0, 0.01, -0.08)
+	_hand_knife.rotation = Vector3(0.25, 0.0, 0.0)
+	_hand_nade = MeshInstance3D.new()
+	_hand_nade.mesh = M.grenade()
+	_hand_nade.position = Vector3(0.0, 0.03, -0.09)
+	for mi in [hand_arm, _hand_knife, _hand_nade]:
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_hand_rig.add_child(mi)
+		_viewmodel_materials(mi)
 	# the survivor's pack lantern: keeps the viewmodel and nearby ground readable
 	var lantern := OmniLight3D.new()
 	lantern.light_color = Color("ffb879")
@@ -295,6 +328,19 @@ func _refresh_viewmodel() -> void:
 	_vm_def = weapon_def()
 	_gun_mesh.mesh = M.gun(w.id, w.upgraded)
 	_viewmodel_materials(_gun_mesh)
+	_sight = M.gun_sight(w.id)
+	if _reticle == null:
+		_reticle = MeshInstance3D.new()
+		var q := QuadMesh.new()
+		var rm := ShaderMaterial.new()
+		rm.shader = preload("res://shaders/red_dot.gdshader")
+		q.material = rm
+		_reticle.mesh = q
+		_reticle.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_gun_mesh.add_child(_reticle)
+	_reticle.visible = _sight.kind == "dot"
+	_reticle.position = _sight.point
+	(_reticle.mesh as QuadMesh).size = Vector2.ONE * float(_sight.size)
 	var aabb := _gun_mesh.mesh.get_aabb()
 	_muzzle.position = Vector3(0, 0.085, aabb.position.z - 0.02)
 	_arm_r.position = Vector3(0.0, -0.05, 0.02)
@@ -302,6 +348,7 @@ func _refresh_viewmodel() -> void:
 	var fore := clampf(aabb.position.z * 0.55, -0.55, -0.12)
 	_arm_l.position = Vector3(-0.015, -0.02, fore)
 	_arm_l.rotation = Vector3(0.6, -0.7, 0.3)
+	_arm_l_rest = _arm_l.transform
 
 
 # =========================================================================
@@ -325,13 +372,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		_start_reload()
 	elif event.is_action_pressed("melee"):
 		_melee()
+	elif event.is_action_pressed("grenade"):
+		_throw_grenade()
 	elif event.is_action_pressed("interact"):
 		_interact_pressed()
 
 
 ## Look input in radians (mouse, touch and stick all end up here).
 func add_look(delta: Vector2) -> void:
-	var ads_slow := lerpf(1.0, 0.55 if _vm_def.get("scope", false) else 0.8, ads_k)
+	# Aim sensitivity is a multiple of the normal one; scopes zoom further, so
+	# they turn a little slower again.
+	var zoomed := float(Settings.get_v("gameplay", "aim_sensitivity")) * (0.7 if _vm_def.get("scope", false) else 1.0)
+	var ads_slow := lerpf(1.0, zoomed, ads_k)
 	yaw -= delta.x * ads_slow
 	var inv := -1.0 if Settings.get_v("gameplay", "invert_y") else 1.0
 	pitch = clampf(pitch - delta.y * ads_slow * inv, deg_to_rad(-88), deg_to_rad(88))
@@ -407,19 +459,42 @@ func _physics_process_body(dt: float) -> void:
 	head.position.y = lerpf(head.position.y, eye, clampf(dt * 10.0, 0.0, 1.0))
 	_footsteps(dt, hv.length())
 	_weapons_tick(dt, menu)
+	_hand_tick(dt)
 	_interaction_tick(dt, menu)
 	_downed_tick(dt)
 	_camera_tick(dt)
 	_send_state(dt)
+	# our own body only casts a shadow, but it may as well walk
+	var flags := int(sprinting) | int(crouching) << 1 | int(downed) << 2 | int(aiming) << 4 \
+		| int(reload_t >= 0.0) << 5 | int(not is_on_floor()) << 6
+	_animate_body(dt, hv.length(), flags)
 
 
 func _footsteps(dt: float, spd: float) -> void:
-	if not is_on_floor() or spd < 0.5:
+	var grounded := is_on_floor()
+	if grounded and not _was_grounded and _fall_speed < -4.5:
+		Sfx.play("land", -4.0, 0.08)
+		_step_t = 0.5
+	_was_grounded = grounded
+	_fall_speed = velocity.y
+	if not grounded or spd < 0.5:
 		return
 	_step_t -= dt * spd / 2.1
 	if _step_t <= 0.0:
 		_step_t = 1.0
-		Sfx.play("step%d" % _rng.randi_range(0, 1), -14.0 if crouching else -9.0, 0.12)
+		var vol := -12.0 if crouching else (-2.0 if sprinting else -5.0)
+		Sfx.play("step_%s%d" % [game.arena.surface_at(global_position), _rng.randi_range(0, 2)], vol, 0.1)
+
+
+## Remote players' footsteps, from their interpolated speed.
+func _remote_footsteps(dt: float) -> void:
+	if _net_flags & (4 | 8 | 64) != 0 or _remote_speed < 0.6:
+		return
+	_step_t -= dt * _remote_speed / 2.1
+	if _step_t <= 0.0:
+		_step_t = 1.0
+		var vol := -14.0 if _net_flags & 2 else (-3.0 if _net_flags & 1 else -6.0)
+		Sfx.play_at("step_%s%d" % [game.arena.surface_at(global_position), _rng.randi_range(0, 2)], global_position, vol, 0.1)
 
 
 func _camera_tick(dt: float) -> void:
@@ -439,9 +514,13 @@ func _camera_tick(dt: float) -> void:
 	var bob := Vector3(sin(_bob_t) * 0.012, -absf(cos(_bob_t)) * 0.014, 0) * bob_amt
 	_sway = _sway.lerp(Vector2.ZERO, clampf(dt * 8.0, 0.0, 1.0))
 	var hip: Vector3 = def.get("slot_pos", Vector3(0.16, -0.18, -0.34))
-	var ads := Vector3(0.0, -0.071, hip.z + 0.07)
+	# Aiming puts this gun's own sight (red dot, front post or scope) on the
+	# screen centre, 30 cm from the eye: shots fly along the camera's centre
+	# line, so they land exactly where the sight says.
+	var sp: Vector3 = _sight.get("point", Vector3(0, 0.12, -0.2)) * viewmodel.scale.x
+	var ads := Vector3(-sp.x, -sp.y, -0.3 - sp.z)
 	var pos := hip.lerp(ads, ease(ads_k, -2.0)) + bob
-	pos += Vector3(-_sway.x * 0.03, _sway.y * 0.03, 0) * lerpf(1.0, 0.25, ads_k)
+	pos += Vector3(-_sway.x * 0.03, _sway.y * 0.03, 0) * lerpf(1.0, 0.1, ads_k)
 	pos.z += _kick * 0.06
 	pos.y += _kick * 0.01
 	if sprinting:
@@ -453,8 +532,25 @@ func _camera_tick(dt: float) -> void:
 		pos.y -= k * 0.08
 	if downed:
 		pos += Vector3(0.0, -0.05, 0.03)
+	var hand_k := 0.0
+	if _hand_anim != "":
+		# the gun drops out of the off hand's way
+		hand_k = sin(clampf(_hand_t / (0.42 if _hand_anim == "melee" else 0.55), 0.0, 1.0) * PI)
+		pos += Vector3(0.05, -0.15, 0.06) * hand_k
 	viewmodel.position = pos
-	var rot := Vector3(_kick * 0.12 + (k_reload_tilt() if reload_t >= 0.0 else 0.0), _sway.x * 0.05, -_sway.x * 0.08)
+	# reloads: the off hand drops to the magazine and back
+	var t_rest := _arm_l_rest
+	if reload_t >= 0.0:
+		var k := sin(clampf(1.0 - reload_t / reload_total, 0.0, 1.0) * PI)
+		t_rest = t_rest.translated_local(Vector3(0.0, -0.1, 0.08) * k).rotated_local(Vector3.RIGHT, -0.5 * k)
+	_arm_l.transform = t_rest
+	_shake = move_toward(_shake, 0.0, dt * 2.2)
+	camera.h_offset = randf_range(-1.0, 1.0) * _shake * 0.05
+	camera.v_offset = randf_range(-1.0, 1.0) * _shake * 0.05
+	camera.rotation.z = randf_range(-1.0, 1.0) * _shake * 0.025
+	var sway_k := lerpf(1.0, 0.15, ads_k)    # steady while aiming, so the sight stays put
+	var rot := Vector3(_kick * 0.12 + (k_reload_tilt() if reload_t >= 0.0 else 0.0) - hand_k * 0.35,
+		_sway.x * 0.05 * sway_k - hand_k * 0.15, -_sway.x * 0.08 * sway_k + hand_k * 0.25)
 	if sprinting:
 		rot += Vector3(-0.25, 0.5, 0.15)
 	viewmodel.rotation = viewmodel.rotation.lerp(rot, clampf(dt * 14.0, 0.0, 1.0))
@@ -479,8 +575,12 @@ func _weapons_tick(dt: float, menu: bool) -> void:
 	swap_t = maxf(swap_t - dt, 0.0)
 	melee_t = maxf(melee_t - dt, 0.0)
 	bloom = move_toward(bloom, 0.0, dt * 6.0)
+	if _melee_hit_t >= 0.0:
+		_melee_hit_t -= dt
+		if _melee_hit_t < 0.0:
+			_melee_strike()     # the blade lands mid-swing
 	var w := weapon()
-	if w.is_empty():
+	if w.is_empty() or _hand_anim == "throw":
 		return
 	var def := weapon_def()
 	if reload_t >= 0.0:
@@ -656,11 +756,21 @@ func _switch_to(i: int) -> void:
 
 
 func _melee() -> void:
-	if melee_t > 0.0 or dead:
+	if melee_t > 0.0 or dead or downed or _hand_anim == "throw":
 		return
-	melee_t = 0.7
-	_kick = 1.2
+	melee_t = 0.6
+	_melee_hit_t = 0.15
+	_start_hand("melee")
+	_tp_melee = 1.0
 	Sfx.play("melee", -4.0)
+	if not Net.solo and game.phase != "loading":
+		_fx_melee.rpc()
+
+
+## The knife reaches its target: hit the nearest Husk in front of us.
+func _melee_strike() -> void:
+	if dead or downed:
+		return
 	var fwd := -camera.global_basis.z
 	var best = null
 	var best_d := 2.2
@@ -680,6 +790,7 @@ func _melee() -> void:
 
 
 func refill_ammo() -> void:
+	grenades = MAX_GRENADES
 	for w in weapons:
 		var d := W.get_def(w.id, w.upgraded)
 		w.reserve = d.reserve
@@ -752,11 +863,112 @@ func _impact(pos: Vector3, normal: Vector3, big := false) -> void:
 
 @rpc("authority", "unreliable", "call_remote")
 func _fx_shot(origin: Vector3, ends: PackedVector3Array, wid: String) -> void:
+	_tp_kick = 1.0
 	var def := W.get_def(wid)
 	Sfx.play_at(def.sound, origin, 0.0)
 	for e in ends:
 		_tracer(origin, e, false)
 	_net_weapon = wid
+
+
+@rpc("authority", "unreliable", "call_remote")
+func _fx_melee() -> void:
+	_tp_melee = 1.0
+	Sfx.play_at("melee", global_position + Vector3.UP * 1.4, -6.0)
+
+
+## Another player threw a grenade (shown on their body).
+func on_remote_throw() -> void:
+	_tp_throw = 1.0
+
+
+# =========================================================================
+# Grenades and the off hand
+# =========================================================================
+
+func _throw_grenade() -> void:
+	if dead or downed or _hand_anim != "" or game.phase == "loading":
+		return
+	if grenades <= 0:
+		Sfx.play("empty")
+		game.hud.toast("No grenades", Color("ff9a5a"))
+		return
+	grenades -= 1
+	reload_t = -1.0
+	_release_t = 0.27
+	_start_hand("throw")
+	_tp_throw = 1.0
+	Sfx.play("pin", -6.0)
+
+
+func _start_hand(kind: String) -> void:
+	_hand_anim = kind
+	_hand_t = 0.0
+	_hand_knife.visible = kind == "melee"
+	_hand_nade.visible = kind == "throw"
+
+
+## Off-hand keyframes in camera space: [time, position, rotation].
+const MELEE_KEYS := [
+	[0.0, Vector3(-0.1, -0.42, -0.25), Vector3(-0.3, 0.0, 0.0)],
+	[0.13, Vector3(0.2, 0.05, -0.36), Vector3(0.35, -0.55, 0.9)],
+	[0.25, Vector3(-0.22, -0.14, -0.4), Vector3(-0.15, 0.75, -0.5)],
+	[0.42, Vector3(-0.26, -0.5, -0.25), Vector3(-0.4, 0.6, -0.6)],
+]
+const THROW_KEYS := [
+	[0.0, Vector3(-0.12, -0.45, -0.25), Vector3(-0.2, 0.2, 0.0)],
+	[0.2, Vector3(-0.17, 0.04, -0.1), Vector3(0.9, 0.25, 0.3)],
+	[0.32, Vector3(-0.05, 0.06, -0.5), Vector3(-0.55, 0.0, 0.0)],
+	[0.55, Vector3(-0.12, -0.48, -0.3), Vector3(-0.4, 0.1, 0.0)],
+]
+
+
+func _hand_tick(dt: float) -> void:
+	if _release_t >= 0.0:
+		_release_t -= dt
+		if _release_t < 0.0:
+			_release_grenade()
+	if _hand_anim == "":
+		_hand_rig.visible = false
+		_arm_l.visible = true
+		return
+	_hand_t += dt
+	var keys: Array = MELEE_KEYS if _hand_anim == "melee" else THROW_KEYS
+	var last: Array = keys[keys.size() - 1]
+	if _hand_t >= last[0]:
+		_hand_anim = ""
+		_hand_rig.visible = false
+		_arm_l.visible = true
+		return
+	var i := 0
+	while i < keys.size() - 2 and _hand_t >= keys[i + 1][0]:
+		i += 1
+	var a: Array = keys[i]
+	var b: Array = keys[i + 1]
+	var f := smoothstep(0.0, 1.0, (_hand_t - a[0]) / (b[0] - a[0]))
+	var qa := Quaternion.from_euler(a[2])
+	var qb := Quaternion.from_euler(b[2])
+	_hand_rig.transform = Transform3D(Basis(qa.slerp(qb, f)).scaled(Vector3.ONE * 0.6), (a[1] as Vector3).lerp(b[1], f))
+	_hand_rig.visible = true
+	_arm_l.visible = false
+
+
+func _release_grenade() -> void:
+	_hand_nade.visible = false
+	var fwd := -camera.global_basis.z
+	var origin := camera.global_position + fwd * 0.5 - camera.global_basis.x * 0.12 - Vector3.UP * 0.05
+	# never start inside a wall we're hugging
+	var hit := get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(camera.global_position, origin, 1))
+	if not hit.is_empty():
+		origin = hit.position - fwd * 0.15
+	var vel := fwd * 12.0 + Vector3.UP * 3.2 + Vector3(velocity.x, 0, velocity.z) * 0.6
+	game.throw_grenade(origin, vel)
+	Sfx.play("throw", -4.0)
+
+
+## Rattle the camera (grenade blasts nearby).
+func shake(amount: float) -> void:
+	_shake = maxf(_shake, amount)
 
 
 # =========================================================================
@@ -958,14 +1170,18 @@ func revive() -> void:
 
 
 func on_round_start() -> void:
+	grenades = maxi(grenades, 2)
 	if dead:
 		dead = false
 		downed = false
 		hp = max_hp
 		global_position = game.arena.player_spawns[0] + Vector3(0, 0.2, 0)
 		velocity = Vector3.ZERO
+		# Spectating turned the head to face a teammate; without a full reset
+		# the view keeps that turn and movement no longer matches the camera.
 		head.top_level = false
-		head.position = Vector3(0, EYE, 0)
+		head.transform = Transform3D(Basis(), Vector3(0, EYE, 0))
+		pitch = 0.0
 		weapons = [_new_slot("tinder", false)]
 		cur = 0
 		_vm_id = ""
@@ -978,6 +1194,9 @@ func _spectate() -> void:
 	if others.is_empty():
 		return
 	var t: Node3D = others[0]
+	camera.h_offset = 0.0
+	camera.v_offset = 0.0
+	camera.rotation.z = 0.0
 	head.top_level = true
 	var back: Vector3 = t.global_basis.z * 2.6 + Vector3.UP * 1.9
 	head.global_position = head.global_position.lerp(t.global_position + back, 0.1)
@@ -996,7 +1215,8 @@ func _send_state(dt: float) -> void:
 	if _state_t > 0.0 or Net.solo or game.phase == "loading":
 		return
 	_state_t = 1.0 / STATE_RATE
-	var flags := int(sprinting) | int(crouching) << 1 | int(downed) << 2 | int(dead) << 3 | int(aiming) << 4 | int(reload_t >= 0.0) << 5
+	var flags := int(sprinting) | int(crouching) << 1 | int(downed) << 2 | int(dead) << 3 | int(aiming) << 4 \
+		| int(reload_t >= 0.0) << 5 | int(not is_on_floor()) << 6
 	var w := weapon()
 	_net_state.rpc(global_position, yaw, pitch, flags, w.get("id", ""), w.get("upgraded", false))
 
@@ -1036,22 +1256,20 @@ func _remote_update(dt: float) -> void:
 	var is_down := _net_flags & 4 != 0
 	visible = not is_dead
 	$Shape.disabled = is_dead
-	_animate_body(dt, is_down)
-
-
-func _animate_body(dt: float, is_down: bool) -> void:
-	_bob_t += dt * (2.0 + _remote_speed * 2.0)
-	var swing := clampf(_remote_speed / 4.0, 0.0, 1.0) * 0.8
-	var s := sin(_bob_t)
-	_parts.leg_l.rotation.x = s * swing
-	_parts.leg_r.rotation.x = -s * swing
-	var aim_pitch := -PI * 0.5 + pitch
-	_parts.arm_r.rotation = Vector3(aim_pitch, 0.0, 0.1)
-	_parts.arm_l.rotation = Vector3(aim_pitch + 0.1, -0.5, 0.0)
-	_parts.head.rotation.x = pitch * 0.6
-	_parts.torso.rotation.x = pitch * 0.15
-	_body.rotation.x = lerpf(_body.rotation.x, -1.25 if is_down else 0.0, clampf(dt * 6.0, 0.0, 1.0))
-	_body.position.y = lerpf(_body.position.y, 0.35 if is_down else 0.0, clampf(dt * 6.0, 0.0, 1.0))
-	var crouch := _net_flags & 2 != 0
-	_body.scale.y = lerpf(_body.scale.y, 0.75 if crouch else 1.0, clampf(dt * 10.0, 0.0, 1.0))
+	_animate_body(dt, _remote_speed, _net_flags)
+	_remote_footsteps(dt)
 	_name_label.text = display_name + ("  ⚠ DOWN" if is_down else "")
+
+
+## Pose the third-person body from movement speed and state flags (the
+## network flags for remote players, our own state for our shadow).
+func _animate_body(dt: float, spd: float, flags: int) -> void:
+	_tp_phase += dt * (1.2 + spd * (2.6 if flags & 1 else 2.9))
+	_tp_kick = maxf(_tp_kick - dt * 6.0, 0.0)
+	_tp_melee = maxf(_tp_melee - dt / 0.38, 0.0)
+	_tp_throw = maxf(_tp_throw - dt / 0.5, 0.0)
+	A.survivor_pose(_parts, _body, {
+		"phase": _tp_phase, "speed": spd, "pitch": pitch,
+		"sprint": flags & 1 != 0, "crouch": flags & 2 != 0, "down": flags & 4 != 0, "aim": flags & 16 != 0,
+		"reload": flags & 32 != 0, "air": flags & 64 != 0,
+		"kick": _tp_kick, "melee": _tp_melee, "throw": _tp_throw}, dt)

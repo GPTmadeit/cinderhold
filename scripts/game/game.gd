@@ -9,6 +9,7 @@ const PlayerScript := preload("res://scripts/player/player.gd")
 const EnemyScript := preload("res://scripts/enemy/enemy.gd")
 const HudScript := preload("res://scripts/ui/hud.gd")
 const FxScript := preload("res://scripts/game/fx.gd")
+const GrenadesScript := preload("res://scripts/game/grenades.gd")
 const W := preload("res://scripts/game/weapons.gd")
 const P := preload("res://scripts/game/perks.gd")
 const M := preload("res://scripts/voxel/models.gd")
@@ -24,6 +25,8 @@ var arena: Node3D
 var players_root: Node3D
 var enemies_root: Node3D
 var fx_root: FxScript              # pooled hit effects; also holds power-ups
+var live_grenades: GrenadesScript  # grenades in flight, simulated on every peer
+var _next_grenade := 0
 var hud: CanvasLayer
 var local_player: CharacterBody3D
 
@@ -57,6 +60,7 @@ var _check_t := 0.0
 func _ready() -> void:
 	Diagnostics.ensure(get_tree())
 	_rng.randomize()
+	_load_t0 = Time.get_ticks_msec()
 	var ls = LoadingScreen.open(get_tree(), "Preparing the outpost…")
 	players_root = Node3D.new()
 	players_root.name = "Players"
@@ -67,10 +71,16 @@ func _ready() -> void:
 	fx_root = FxScript.new()
 	fx_root.name = "FX"
 	add_child(fx_root)
+	live_grenades = GrenadesScript.new()
+	live_grenades.name = "Grenades"
+	live_grenades.game = self
+	add_child(live_grenades)
 	arena = ArenaScript.new()
 	arena.name = "Arena"
 	add_child(arena)
-	await arena.build(false, func(f, stage): ls.set_progress(f * 0.62, stage))
+	# solo matches roll their own vents; co-op uses the seed the host sent
+	var vent_seed: int = randi() if Net.solo else Net.match_seed()
+	await arena.build(false, func(f, stage): ls.set_progress(f * 0.62, stage), vent_seed)
 	arena.door_opened.connect(func(_l): _fields.clear())
 	await _warm_models(ls)
 
@@ -95,6 +105,7 @@ func _ready() -> void:
 		await get_tree().process_frame
 	loaded = true
 	ls.close()
+	print("Cinderhold: match ready in %.1f s" % ((Time.get_ticks_msec() - _load_t0) / 1000.0))
 
 	multiplayer.peer_disconnected.connect(_on_peer_left)
 	Net.disconnected.connect(_on_host_lost)
@@ -108,6 +119,7 @@ func _ready() -> void:
 
 ## True once the map, models and shaders are ready and the match can run.
 var loaded := false
+var _load_t0 := 0
 
 
 ## Build every enemy, survivor, weapon and power-up model now, behind the
@@ -126,10 +138,15 @@ func _warm_models(ls) -> void:
 	for k in POWERUP_KINDS:
 		jobs.append(func(): M.powerup(k))
 	jobs.append(func(): M.arms())
-	for i in jobs.size():
-		jobs[i].call()
-		ls.set_progress(0.62 + 0.16 * (i + 1) / jobs.size(), "Waking the Husks…")
+	jobs.append(func(): M.knife())
+	jobs.append(func(): M.grenade())
+	# in parallel on worker threads; models.gd caches each one
+	var task := WorkerThreadPool.add_group_task(func(i): jobs[i].call(), jobs.size(), -1, true, "Cinderhold: models")
+	while not WorkerThreadPool.is_group_task_completed(task):
+		var done := WorkerThreadPool.get_group_processed_element_count(task)
+		ls.set_progress(0.62 + 0.16 * done / jobs.size(), "Waking the Husks…")
 		await get_tree().process_frame
+	WorkerThreadPool.wait_for_group_task_completion(task)
 
 
 ## Draw one of everything in front of the camera for a few frames while the
@@ -158,6 +175,21 @@ func _warm_shaders(ls) -> void:
 		mi.mesh = m
 		mi.position = Vector3(x, 0, 0)
 		mi.scale = Vector3.ONE * 0.3
+		stage.add_child(mi)
+		x += 0.1
+	# the red-dot reticle's shader, and the knife and grenade
+	var dot := MeshInstance3D.new()
+	var q := QuadMesh.new()
+	q.size = Vector2(0.3, 0.3)
+	var rm := ShaderMaterial.new()
+	rm.shader = preload("res://shaders/red_dot.gdshader")
+	q.material = rm
+	dot.mesh = q
+	stage.add_child(dot)
+	for m in [M.knife(), M.grenade()]:
+		var mi := MeshInstance3D.new()
+		mi.mesh = m
+		mi.position = Vector3(x, 0, 0)
 		stage.add_child(mi)
 		x += 0.1
 	fx_root.warm(stage.global_position)
@@ -280,7 +312,25 @@ func round_health(r: int) -> float:
 	return 1050.0 * pow(1.1, r - 9)
 
 
+## Enemy speed: a multiplier that grows a little every round. The first
+## step is +2%; each later step is a random 0.1–0.9 points bigger than the
+## one before (never smaller), so the pace creeps up instead of jumping.
+## Each kind also has a top speed (enemy.gd) a sprinting survivor can beat.
+const SPEED_FIRST_STEP := 0.02
+var speed_mult := 1.0
+var _speed_step := 0.0
+var _speed_round := 1
+
+
+func _grow_speed(to_round: int) -> void:
+	while _speed_round < to_round:
+		_speed_round += 1
+		_speed_step = SPEED_FIRST_STEP if _speed_step == 0.0 else _speed_step + _rng.randf_range(0.001, 0.009)
+		speed_mult += _speed_step
+
+
 func _start_round(r: int) -> void:
+	_grow_speed(r)
 	var n := maxi(Net.players.size(), 1)
 	var count := int(round((4.0 + r * 2.4 + pow(r, 1.6)) * (1.0 + 0.55 * (n - 1))))
 	_to_spawn = count
@@ -333,19 +383,15 @@ func _spawn_tick(dt: float) -> void:
 			brutes += 1
 	if round_num >= 6 and brutes < 1 + round_num / 10 and _rng.randf() < 0.035 + 0.004 * round_num:
 		kind = "brute"
-	elif _rng.randf() < clampf((round_num - 2) * 0.16, 0.0, 0.8):
-		kind = "runner"
+	elif _rng.randf() < clampf((round_num - 3) * 0.04, 0.0, 0.35):
+		kind = "runner"   # a growing minority, never the bulk of a wave
 	var hp := round_health(round_num)
 	match kind:
 		"runner": hp *= 0.8
 		"brute": hp = hp * 4.5 + 1200.0
-	var tier := 0
-	if kind == "husk":
-		var roll := _rng.randf()
-		tier = 0 if roll > clampf(round_num * 0.2, 0.0, 0.9) else (1 if roll > clampf((round_num - 3) * 0.15, 0.0, 0.7) else 2)
 	var pos: Vector3 = vent.pos + Vector3(_rng.randf_range(-0.3, 0.3), 0, _rng.randf_range(-0.3, 0.3))
 	_to_spawn -= 1
-	_spawn_enemy.rpc(_next_enemy, kind, _rng.randi_range(0, 4), pos, hp, tier)
+	_spawn_enemy.rpc(_next_enemy, kind, _rng.randi_range(0, 4), pos, hp, speed_mult)
 	_next_enemy += 1
 
 
@@ -367,12 +413,12 @@ func _pick_vent() -> Dictionary:
 
 
 @rpc("authority", "reliable", "call_local")
-func _spawn_enemy(id: int, kind: String, variant: int, pos: Vector3, hp: float, tier: int) -> void:
+func _spawn_enemy(id: int, kind: String, variant: int, pos: Vector3, hp: float, speed: float) -> void:
 	var _pt := Time.get_ticks_usec()
 	var e: CharacterBody3D = EnemyScript.new()
 	e.name = "E%d" % id
 	enemies_root.add_child(e)
-	e.setup(self, id, kind, variant, pos, hp, tier)
+	e.setup(self, id, kind, variant, pos, hp, speed)
 	enemies[id] = e
 	Sfx.play_at("spawn", pos, -4.0)
 	if Prof.on:
@@ -440,7 +486,13 @@ func report_hits(hits: Array) -> void:
 func _hits(hits: Array) -> void:
 	if not multiplayer.is_server():
 		return
-	var peer := _sender()
+	_apply_hits(_sender(), hits)
+
+
+## Host: apply [[enemy_id, damage, head, melee], ...] dealt by `peer`.
+func _apply_hits(peer: int, hits: Array) -> void:
+	if not stats.has(peer):
+		return
 	for h in hits:
 		var e = enemies.get(int(h[0]))
 		if e == null or e.dying:
@@ -502,6 +554,45 @@ func _sync_points(p: Dictionary, s: Dictionary) -> void:
 	var delta := int(points.get(me, 0)) - before
 	if delta != 0 and hud and phase != "loading":
 		hud.points_popup(delta)
+
+
+## The local player threw a grenade: every peer simulates it from here.
+func throw_grenade(origin: Vector3, vel: Vector3) -> void:
+	_next_grenade += 1
+	_grenade_thrown.rpc(multiplayer.get_unique_id() * 1000 + _next_grenade % 1000, origin, vel)
+
+
+@rpc("any_peer", "reliable", "call_local")
+func _grenade_thrown(id: int, origin: Vector3, vel: Vector3) -> void:
+	var peer := _sender()
+	if vel.length() > 30.0:
+		return
+	live_grenades.spawn(id, peer, origin, vel)
+	var p := get_player(peer)
+	if p and not p.is_local():
+		p.on_remote_throw()
+
+
+## Host: a grenade went off. Enemies in the radius with nothing solid in the
+## way take damage that falls off with distance; survivors are never hurt.
+func grenade_blast(pos: Vector3, peer: int, radius: float) -> void:
+	var full := 400.0 + round_health(round_num) * 0.9
+	var space := get_world_3d().direct_space_state
+	var hits := []
+	for e in enemies.values():
+		if e.dying:
+			continue
+		var chest: Vector3 = e.global_position + Vector3.UP * 0.9
+		var d := chest.distance_to(pos)
+		if d > radius:
+			continue
+		if not space.intersect_ray(PhysicsRayQueryParameters3D.create(pos + Vector3.UP * 0.2, chest, 1)).is_empty():
+			continue   # behind a wall or a door
+		hits.append([e.enemy_id, full * lerpf(1.0, 0.3, d / radius), false, false])
+	if Settings.bot_driving():
+		print("GRENADE blast at %s hit %d enemies" % [pos.snappedf(0.1), hits.size()])
+	if not hits.is_empty():
+		_apply_hits(peer, hits)
 
 
 func _sender() -> int:
@@ -597,8 +688,12 @@ func _request(kind: String, key: String, extra) -> void:
 			if not cache_state.is_empty() and int(cache_state.owner) == peer:
 				cache_state.ready = true
 		"revive":
+			# is_downed(): on the host, a remote player's own `downed` flag is
+			# never set; their state arrives in the network flags instead.
 			var target := get_player(int(key))
-			if target and target.downed:
+			var reviver := get_player(peer)
+			if target and target != reviver and target.is_downed() and reviver and reviver.targetable() \
+					and reviver.global_position.distance_to(target.global_position) < 3.5:
 				stats[peer].revives += 1
 				add_points(peer, 100)
 				_revived.rpc(int(key), peer)
@@ -713,6 +808,8 @@ func _revived(target: int, reviver: int) -> void:
 	var p := get_player(target)
 	if p and p.is_multiplayer_authority():
 		p.revive()
+	if Settings.bot_driving():
+		print("REVIVED %s by %s" % [player_name(target), player_name(reviver)])
 	Sfx.play("revive", -2.0)
 	hud.toast("%s revived %s" % [player_name(reviver), player_name(target)], Color("b8f0a8"))
 
@@ -776,7 +873,7 @@ func _check_powerup_pickups() -> void:
 	for id in powerups.keys():
 		var pu: Dictionary = powerups[id]
 		for p in player_nodes():
-			if p.alive() and not p.downed and Vector2(p.global_position.x, p.global_position.z).distance_to(Vector2(pu.pos.x, pu.pos.z)) < 1.2:
+			if p.alive() and not p.is_downed() and Vector2(p.global_position.x, p.global_position.z).distance_to(Vector2(pu.pos.x, pu.pos.z)) < 1.2:
 				_powerup_taken.rpc(id, pu.kind, p.peer_id)
 				if pu.kind == "purge":
 					_do_purge.call_deferred()
@@ -828,7 +925,7 @@ func _check_game_over() -> void:
 	if phase == "loading" or phase == "over":
 		return
 	for p in player_nodes():
-		if p.alive() and not p.downed:
+		if p.alive() and not p.is_downed():
 			return
 	if player_nodes().is_empty():
 		return
