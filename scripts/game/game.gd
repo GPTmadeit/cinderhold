@@ -61,7 +61,8 @@ func _ready() -> void:
 	Diagnostics.ensure(get_tree())
 	_rng.randomize()
 	_load_t0 = Time.get_ticks_msec()
-	var ls = LoadingScreen.open(get_tree(), "Preparing the outpost…")
+	var ls = LoadingScreen.open(get_tree(), "Preparing %s…" % ArenaScript.map_title(Net.match_map()))
+	ls.set_note(ArenaScript.map_attribution(Net.match_map()))
 	players_root = Node3D.new()
 	players_root.name = "Players"
 	add_child(players_root)
@@ -80,7 +81,7 @@ func _ready() -> void:
 	add_child(arena)
 	# solo matches roll their own vents; co-op uses the seed the host sent
 	var vent_seed: int = randi() if Net.solo else Net.match_seed()
-	await arena.build(false, func(f, stage): ls.set_progress(f * 0.62, stage), vent_seed)
+	await arena.build(false, func(f, stage): ls.set_progress(f * 0.62, stage), vent_seed, Net.match_map())
 	arena.door_opened.connect(func(_l): _fields.clear())
 	await _warm_models(ls)
 
@@ -708,7 +709,7 @@ func _deny(reason: String) -> void:
 @rpc("authority", "reliable", "call_local")
 func _door_opened(letter: String, peer: int) -> void:
 	arena.open_door(letter)
-	hud.toast("%s opened the %s" % [player_name(peer), arena.DOORS[letter].name], Color("ffd9a8"))
+	hud.toast("%s opened the %s" % [player_name(peer), arena.map.DOORS[letter].name], Color("ffd9a8"))
 
 
 @rpc("authority", "reliable", "call_local")
@@ -746,6 +747,7 @@ func _forge_start(peer: int, wid: String) -> void:
 @rpc("authority", "reliable", "call_local")
 func _forge_done() -> void:
 	var node: Node3D = arena.find_interactable("forge", "forge").node
+	Sfx.play_at("forge_done", node.global_position + Vector3.UP, 2.0)
 	var g := node.get_node_or_null("ForgeGun")
 	if g:
 		g.queue_free()

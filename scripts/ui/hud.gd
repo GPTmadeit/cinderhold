@@ -365,6 +365,28 @@ func _notification(what: int) -> void:
 		_keep_mouse_locked(true)
 
 
+var _heart: AudioStreamPlayer
+
+
+## A heartbeat that rises as health falls below a third.
+func _heartbeat(dt: float) -> void:
+	var low: bool = not player.downed and not player.dead and player.hp < player.max_hp * 0.34 and not _over.visible
+	if _heart == null:
+		if not Sfx.streams.has("heartbeat"):
+			return
+		_heart = AudioStreamPlayer.new()
+		_heart.stream = Sfx.streams["heartbeat"]
+		_heart.bus = "SFX"
+		_heart.volume_db = -60.0
+		add_child(_heart)
+	var target := lerpf(-4.0, -16.0, clampf(player.hp / (player.max_hp * 0.34), 0.0, 1.0)) if low else -60.0
+	_heart.volume_db = move_toward(_heart.volume_db, target, dt * 40.0)
+	if _heart.volume_db > -55.0 and not _heart.playing:
+		_heart.play()
+	elif _heart.volume_db <= -59.0 and _heart.playing:
+		_heart.stop()
+
+
 ## Keep the mouse locked to the game whenever it's being played. Windows can
 ## lose the lock on any focus change (alt-tab, a notification, Wayland
 ## dropping the pointer constraint), and it used to come back only on the
@@ -429,7 +451,7 @@ func round_banner(r: int, starting: bool) -> void:
 
 func _round_flavour(r: int) -> String:
 	if r == 1:
-		return "The ash stirs. Hold the outpost."
+		return "The ash stirs. Hold the square." if game.arena.map_id == "times_square" else "The ash stirs. Hold the outpost."
 	if r % 5 == 0:
 		return "The Brutes are coming."
 	var lines := ["They smell the fire.", "More crawl from the vents.", "The night grows longer.", "Keep the braziers lit.", "Don't let them reach you."]
@@ -514,6 +536,7 @@ func _process(dt: float) -> void:
 	if player == null or game == null:
 		return
 	_keep_mouse_locked()
+	_heartbeat(dt)
 	_fps.visible = bool(Settings.get_v("gameplay", "show_fps"))
 	if _fps.visible:
 		_fps.text = "%d fps" % Engine.get_frames_per_second()

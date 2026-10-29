@@ -1,0 +1,12 @@
+{
+  // Cinderhold's friend relay: one Durable Object holds every player's
+  // WebSocket (hibernating while idle), so it fits Cloudflare's free plan.
+  "name": "cinderhold-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "observability": { "enabled": false }
+}

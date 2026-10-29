@@ -12,10 +12,10 @@ const PATH := "user://settings.cfg"
 const DEFAULTS := {
 	"player": {"name": "", "color": 0},
 	"gameplay": {"sensitivity": 1.0, "aim_sensitivity": 0.8, "invert_y": false, "fov": 80.0, "show_fps": false,
-		"aim_assist": true, "touch_controls": "auto", "touch_look": 1.0},
+		"aim_assist": true, "touch_controls": "auto", "touch_look": 1.0, "map": "outpost"},
 	"video": {"fullscreen": false, "vsync": true, "quality": 2, "render_scale": 1.0, "max_fps": 0},
 	"audio": {"master": 0.8, "sfx": 0.9, "music": 0.55},
-	"net": {"last_ip": "127.0.0.1", "port": 47820, "upnp": true},
+	"net": {"last_ip": "127.0.0.1", "port": 47820, "upnp": true, "presence": true},
 	"updates": {"token": "", "auto_check": true},
 }
 

@@ -20,6 +20,7 @@ var _bar: ProgressBar
 var _stage: Label
 var _pct: Label
 var _tip: Label
+var _note: Label
 var _root: Control
 var _target := 0.0
 var _shown := 0.0
@@ -107,6 +108,15 @@ func _ready() -> void:
 	_tip.custom_minimum_size.x = 620
 	_tip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_tip)
+	_note = T.label("", 15, Color(1, 1, 1, 0.4))
+	_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	v.add_child(_note)
+
+
+## A small line under the tips (the map's data credit).
+func set_note(text: String) -> void:
+	if _note:
+		_note.text = text
 
 
 func _embers() -> CPUParticles2D:

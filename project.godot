@@ -5,7 +5,7 @@ config_version=5
 
 config/name="Cinderhold"
 config/description="Co-op voxel wave survival. Hold the line until dawn."
-config/version="0.2.0"
+config/version="0.3.0"
 run/main_scene="res://scenes/boot.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
@@ -40,6 +40,9 @@ pointing/emulate_touch_from_mouse=false
 common/physics_ticks_per_second=60
 
 [rendering]
+
+rendering_device/pipeline_cache/save_chunk_size_mb=0.5
+shader_compiler/shader_cache/strip_debug=true
 
 renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="mobile"

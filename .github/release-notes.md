@@ -1,4 +1,4 @@
-**Cinderhold** is a co-op voxel wave-survival game for up to four players. Hold a ruined frontier outpost through the night against waves of ember-eyed Husks.
+**Cinderhold** is a co-op voxel wave-survival game for up to four players. Hold a ruined frontier outpost, or Times Square rebuilt from Manhattan's real streets, through the night against waves of ember-eyed Husks.
 
 ### Downloads
 
@@ -25,5 +25,9 @@ One player picks **Host Co-op**. Friends pick **Join Co-op** and enter the host'
 
 - The host's lobby shows their **internet address** with a Copy button, and the game asks the router to open the port by itself (UPnP). If the router won't, the lobby explains how to forward the port by hand, or use a LAN, ZeroTier or Tailscale address instead.
 - **Friends**: share the friend code from Main menu → Friends, or press **+ Friend** in a lobby. Friends you've played with can be joined from the list in one click.
+- Once you've added each other, you see whether friends are online and what they're doing, get a notice when they come online, start hosting or invite you, and can invite them from your lobby. **Settings → Gameplay → Friend status** turns this off.
+- The host picks the map in the lobby.
 - All co-op traffic is encrypted. Joining a friend from the list also checks it's really them.
 - Everyone needs the same version to play together, so update before a session.
+
+Times Square map data © OpenStreetMap contributors, under the [Open Database License](https://www.openstreetmap.org/copyright).

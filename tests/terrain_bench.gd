@@ -3,8 +3,9 @@ extends Node
 func _ready() -> void:
 	var a = preload("res://scripts/world/arena.gd").new()
 	add_child(a)
-	a.H = a.LAYOUT.size()
-	a.W = a.LAYOUT[0].length()
+	a.map = a.MAPS.outpost.new()
+	a.H = a.map.LAYOUT.size()
+	a.W = a.map.LAYOUT[0].length()
 	a.walk.resize(a.W * a.H)
 	a._world_body = StaticBody3D.new()
 	a.add_child(a._world_body)

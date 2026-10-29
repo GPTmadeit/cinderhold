@@ -38,6 +38,16 @@ func setup() -> void:
 	multiplayer.connection_failed.connect(func(): _reset(); connection_failed.emit("Couldn't reach the host."))
 	multiplayer.server_disconnected.connect(func(): _reset(); disconnected.emit("The host closed the game."))
 	Identity.prepare()
+	# friend status and invites (scripts/core/presence.gd), for the whole session
+	if get_node_or_null("Presence") == null:
+		var pr: Node = load("res://scripts/core/presence.gd").new()
+		pr.name = "Presence"
+		add_child(pr)
+
+
+## The friend service (status, requests, invites).
+func presence() -> Node:
+	return get_node_or_null("Presence")
 
 
 func port() -> int:
@@ -123,7 +133,7 @@ func leave() -> void:
 
 
 func _reset() -> void:
-	for m in ["pending", "host_id"]:
+	for m in ["pending", "host_id", "match_map"]:
 		remove_meta(m)
 	var pm := get_node_or_null("PortMapper")
 	if pm:
@@ -248,6 +258,7 @@ func _prove(signature: PackedByteArray) -> void:
 	print("Net: %s joined as peer %d (%s)" % [p.name, id, code])
 	Friends.touch(code, p.name, p.cert)
 	_sync_roster.rpc(players)
+	_lobby_map.rpc_id(id, match_map())
 	roster_changed.emit()
 
 
@@ -312,7 +323,7 @@ func start_game() -> void:
 	if not is_host():
 		return
 	in_game = true
-	_begin.rpc(players, randi() & 0x7fffffff)
+	_begin.rpc(players, randi() & 0x7fffffff, match_map())
 
 
 ## The host's per-match random seed (where the ash vents go), shared with
@@ -322,10 +333,32 @@ func match_seed() -> int:
 	return int(get_meta("match_seed", 0))
 
 
+## The map for the next match: in co-op the host's pick (sent to everyone
+## in the lobby), otherwise this player's own. Node metadata, like the seed.
+func match_map() -> String:
+	return str(get_meta("match_map", Settings.get_v("gameplay", "map")))
+
+
+## Pick the map. In a lobby only the host can, and everyone sees it change.
+func set_map(id: String) -> void:
+	if not solo and not is_host():
+		return
+	Settings.set_v("gameplay", "map", id)
+	if not solo:
+		_lobby_map.rpc(id)
+
+
 @rpc("authority", "reliable", "call_local")
-func _begin(roster: Dictionary, seed: int) -> void:
-	print("Net: match starting with %d players" % roster.size())
+func _lobby_map(id: String) -> void:
+	set_meta("match_map", id)
+	roster_changed.emit()
+
+
+@rpc("authority", "reliable", "call_local")
+func _begin(roster: Dictionary, seed: int, map_id: String) -> void:
+	print("Net: match starting with %d players on %s" % [roster.size(), map_id])
 	set_meta("match_seed", seed)
+	set_meta("match_map", map_id)
 	players = roster
 	in_game = true
 	game_starting.emit()

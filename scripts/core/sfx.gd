@@ -82,6 +82,30 @@ func play_at(sound: String, pos: Vector3, vol_db := 0.0, pitch_var := 0.06) -> v
 	p.play()
 
 
+## Small, frequent sounds (shell casings, footsteps' cousins) play on their
+## own few voices, so they never cut off gunfire or speech. The voices live
+## in a child node: this service's member variables must not change.
+func play_minor(sound: String, vol_db := 0.0, pitch_var := 0.08) -> void:
+	if not streams.has(sound):
+		return
+	var pool := get_node_or_null("Minor")
+	if pool == null:
+		pool = Node.new()
+		pool.name = "Minor"
+		add_child(pool)
+		for i in 6:
+			var p := AudioStreamPlayer.new()
+			p.bus = "SFX"
+			pool.add_child(p)
+	var i: int = pool.get_meta("next", 0)
+	pool.set_meta("next", (i + 1) % pool.get_child_count())
+	var p: AudioStreamPlayer = pool.get_child(i)
+	p.stream = streams[sound]
+	p.volume_db = vol_db
+	p.pitch_scale = 1.0 + randf_range(-pitch_var, pitch_var)
+	p.play()
+
+
 func music(track: String) -> void:
 	var synth := get_node_or_null("Synth")
 	if synth and not synth.done:

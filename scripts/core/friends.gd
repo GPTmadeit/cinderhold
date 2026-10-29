@@ -8,6 +8,8 @@ const PATH := "user://friends.json"
 
 static var _list: Array = []
 static var _loaded := false
+## Bumped on every change, so the friend service knows to resend the list.
+static var revision := 0
 
 
 static func all() -> Array:
@@ -33,18 +35,22 @@ static func remember(code: String, name := "", cert := "", address := "", port :
 		return
 	_load()
 	var f := find(code)
-	if f.is_empty():
+	var changed := f.is_empty()
+	if changed:
 		f = {"code": code, "name": "", "cert": "", "address": "", "port": 0, "added": int(Time.get_unix_time_from_system())}
 		_list.append(f)
-	if name != "":
+	if name != "" and f.name != name.substr(0, 16):
 		f.name = name.substr(0, 16)
-	if cert != "":
+		changed = true
+	if cert != "" and f.cert != cert:
 		f.cert = cert
-	if address != "":
+		changed = true
+	if address != "" and (f.address != address or int(f.port) != port):
 		f.address = address
 		f.port = port
-	f.seen = int(Time.get_unix_time_from_system())
-	_save()
+		changed = true
+	if changed:   # only real changes count (the friend service resends the list on each)
+		_save()
 
 
 ## Update a friend we just played with (no-op for strangers).
@@ -88,6 +94,7 @@ static func _load() -> void:
 
 
 static func _save() -> void:
+	revision += 1
 	var f := FileAccess.open(PATH, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(_list, "\t"))

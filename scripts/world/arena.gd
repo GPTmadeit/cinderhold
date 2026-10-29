@@ -1,78 +1,22 @@
 extends Node3D
-## The Cinderhold outpost: builds the voxel map from the layout below, owns
-## the walkability grid, enemy flow fields, doors, zones and interactables.
+## A map: builds its world, and owns the walkability grid, enemy flow
+## fields, doors, zones and interactables. What the map is (layout, doors,
+## placements, zones, and for some maps the whole look) comes from a map
+## definition in scripts/world/maps/.
 ##
-## One map cell is 1 m. Legend:
-##   #  wall           ,  barracks planks   ;  hall tiles   .  cobble   :  earth
-##   A-D door cells    S  player spawn
-##   k bunk  t table  o barrel  c crate  w well  T dead tree  g grave  b brazier  l lantern
-##
-## The ash vents enemies climb out of are placed at random each match (see
-## _place_vents), from a seed the host shares so every player sees the same.
+## One map cell is 1 m.
 
 signal door_opened(letter: String)
 
 const VB := preload("res://scripts/voxel/voxel_builder.gd")
 const M := preload("res://scripts/voxel/models.gd")
 
-const LAYOUT := [
-	"########################################",
-	"#,kk,,kk,,,,kk,,kk,#;;;;;;;;;b;;;;;;;;;#",
-	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
-	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
-	"#,,,,,,,,b,,,,,,,,,#;;;#;;;#;;;;#;;;#;;#",
-	"#,,,,,,,,,,,,,,,,,,C;;;;;;;;;;;;;;;;;;;#",
-	"#,,,,,,,,,,,,,,,,,,C;;;;;;;;;;;;;;;;;;;#",
-	"#,,,,tt,,,,tt,,,,,,#;;;;;;;;;;;;;;;;;;;#",
-	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
-	"#,,,,,,,,,,,,,,,,,,#;;;#;;;#;;;;#;;;#;;#",
-	"#,,,,,,,,,,,,,,cc,,#;;;;;;;;;;;;;;;;;;;#",
-	"#,o,,,,,,,,,,,,,c,,#;c;;;;;;;;;;;;;;;o;#",
-	"#,,,,,,,,,,,,,,,,,,#;;;;;;;;;;;;;;;;;;;#",
-	"########AA####################DD########",
-	"#......................#:::::::::::::b:#",
-	"#.l.........o..........#:::::::::::::::#",
-	"#................cc....#::::::::::T::::#",
-	"#.................c....#:::T:::::::::::#",
-	"#......................#:::::::::::::::#",
-	"#.....ww...SS..........#::::::::gg:::::#",
-	"#.....ww...SS..........B:l:::::::::::::#",
-	"#......................B::::g::::::::::#",
-	"#............b.........#:::::::::::g:::#",
-	"#......................#::::::T::::::::#",
-	"#......................#:::::::::::::::#",
-	"#......................#:::::::::::::::#",
-	"#..co...............l..#::T:::::::::T::#",
-	"#......................#:::::::::::::::#",
-	"#......................#:::::::::::::::#",
-	"########################################",
-]
-
-const DOORS := {
-	"A": {"cost": 750, "name": "Barracks Gate"},
-	"B": {"cost": 750, "name": "Garden Gate"},
-	"C": {"cost": 1000, "name": "Great Hall Door"},
-	"D": {"cost": 1000, "name": "Hall Cellar Door"},
-}
-
-## Interactables: kind, key, cell, facing (direction the front looks).
-const PLACEMENTS := [
-	{"kind": "wallbuy", "key": "kestrel", "cell": Vector2i(4, 13), "face": Vector3.BACK},
-	{"kind": "wallbuy", "key": "tinder", "cell": Vector2i(15, 13), "face": Vector3.BACK},
-	{"kind": "wallbuy", "key": "warden", "cell": Vector2i(14, 13), "face": Vector3.FORWARD},
-	{"kind": "wallbuy", "key": "breacher", "cell": Vector2i(25, 13), "face": Vector3.FORWARD},
-	{"kind": "tonic", "key": "ironhide", "cell": Vector2i(9, 1), "face": Vector3.BACK},
-	{"kind": "tonic", "key": "quickhands", "cell": Vector2i(38, 6), "face": Vector3.LEFT},
-	{"kind": "tonic", "key": "fleetfoot", "cell": Vector2i(38, 17), "face": Vector3.LEFT},
-	{"kind": "tonic", "key": "secondwind", "cell": Vector2i(24, 27), "face": Vector3.RIGHT},
-	{"kind": "forge", "key": "forge", "cell": Vector2i(33, 1), "face": Vector3.BACK},
-	{"kind": "cache", "key": "cache", "cell": Vector2i(30, 28), "face": Vector3.FORWARD},
-]
-
 const TerrainScript := preload("res://scripts/world/terrain.gd")
-const WALKABLE := ",;.:S"
-## Vents per zone each match (half the old fixed ten).
-const VENT_QUOTA := {"court": 2, "barracks": 1, "hall": 1, "garden": 1}
+const MAPS := {
+	"outpost": preload("res://scripts/world/maps/outpost.gd"),
+	"times_square": preload("res://scripts/world/maps/times_square.gd"),
+}
+const AmbienceScript := preload("res://scripts/world/ambience.gd")
 
 var W := 0
 var H := 0
@@ -87,39 +31,63 @@ var _time := 0.0
 var _rng := RandomNumberGenerator.new()
 var _world_body: StaticBody3D
 var menu_mode := false
+var map_id := "outpost"
+## The map definition (scripts/world/maps/*.gd).
+var map: RefCounted
+
+
+## A map's name for menus and loading screens.
+static func map_title(id: String) -> String:
+	return MAPS[id].TITLE if MAPS.has(id) else MAPS.outpost.TITLE
+
+
+## The credit a map's source data needs shown with it, or "".
+static func map_attribution(id: String) -> String:
+	return str(MAPS[id].get("ATTRIBUTION")) if MAPS.has(id) and "ATTRIBUTION" in MAPS[id] else ""
 
 
 ## Build the whole outpost. Pass `report(fraction, stage)` to build across
 ## several frames behind a loading screen (await it); without one it runs
 ## straight through, which tests rely on.
-func build(for_menu := false, report := Callable(), vent_seed := 0) -> void:
+func build(for_menu := false, report := Callable(), vent_seed := 0, which := "outpost") -> void:
+	map_id = which if MAPS.has(which) else "outpost"
+	map = MAPS[map_id].new()
 	_report = report
 	_slice_t = Time.get_ticks_msec()
 	menu_mode = for_menu
 	_rng.seed = 90210
 	_vent_seed = vent_seed
-	H = LAYOUT.size()
-	W = LAYOUT[0].length()
+	ambience = AmbienceScript.new()
+	ambience.name = "Ambience"
+	ambience.is_outdoor = func(p: Vector3): return map.is_outdoor(cell_of(p))
+	add_child(ambience)
+	H = map.LAYOUT.size()
+	W = map.LAYOUT[0].length()
 	walk.resize(W * H)
 	for y in H:
 		for x in W:
-			walk[y * W + x] = 1 if WALKABLE.contains(_ch(x, y)) else 0
+			walk[y * W + x] = 1 if map.WALKABLE.contains(_ch(x, y)) else 0
 	_world_body = StaticBody3D.new()
 	_world_body.name = "WorldBody"
 	_world_body.collision_layer = 1
 	_world_body.collision_mask = 0
 	add_child(_world_body)
 	var off := OS.get_environment("CINDER_DISABLE").split(",")   # dev bisecting
-	await _step(0.02, "Lighting the braziers…")
+	# maps with their own look (the city) build it themselves
+	var custom := map.has_method("build_world")
+	await _step(0.02, "Lighting the braziers…" if not custom else "Waking the screens…")
 	# props build on worker threads while the terrain does
 	var props_task := _start_prop_builds()
 	if not "env" in off:
 		_build_environment()
-	if not "terrain" in off:
+	if custom:
+		await map.build_world(self)
+	elif not "terrain" in off:
 		await _build_terrain()
-	await _step(0.7, "Furnishing the outpost…")
-	await _finish_tasks(props_task, 0.7, 0.86, "Furnishing the outpost…")
-	await _build_props()
+	await _step(0.7, "Furnishing the outpost…" if not custom else "Barricading the streets…")
+	await _finish_tasks(props_task, 0.7, 0.86, "Furnishing the outpost…" if not custom else "Barricading the streets…")
+	if not custom:
+		await _build_props()
 	_place_vents()
 	await _step(0.9, "Hanging the doors…")
 	_build_doors()
@@ -139,6 +107,8 @@ func build(for_menu := false, report := Callable(), vent_seed := 0) -> void:
 var _report := Callable()
 var _slice_t := 0
 var _vent_seed := 0
+## Background sound (scripts/world/ambience.gd): fires, vents, hum, wind.
+var ambience: Node3D
 
 
 ## Report progress and, when building asynchronously, hand the frame back once
@@ -155,30 +125,18 @@ func _step(f: float, stage := "") -> void:
 func _ch(x: int, y: int) -> String:
 	if x < 0 or y < 0 or x >= W or y >= H:
 		return "#"
-	return LAYOUT[y][x]
+	return map.LAYOUT[y][x]
 
 
 ## The floor style a cell sits on (props and vents stand on their zone's floor).
 func _floor_ch(x: int, y: int) -> String:
-	var c := _ch(x, y)
-	if ",;.:".contains(c):
-		return c
-	if y < 13:
-		return "," if x < 19 else ";"
-	if y > 13:
-		return "." if x < 23 else ":"
-	return ";"
+	return map.floor_style(x, y, _ch(x, y))
 
 
 ## What a footstep at `p` sounds like: "wood", "stone" or "dirt".
 func surface_at(p: Vector3) -> String:
 	var c := cell_of(p)
-	var ch := _floor_ch(c.x, c.y)
-	if ch == ",":
-		return "wood"
-	if ch == ":" or (ch == ";" and c.y >= 6 and c.y <= 7 and c.x >= 20):
-		return "dirt"     # garden earth, and the hall's carpet runner is just as soft
-	return "stone"
+	return map.surface(c, _floor_ch(c.x, c.y))
 
 
 func cell_center(c: Vector2i) -> Vector3:
@@ -213,9 +171,9 @@ static var _terrain_meshes: Array[ArrayMesh] = []
 func _build_terrain() -> void:
 	if _terrain_meshes.is_empty():
 		var t = TerrainScript.new()
-		var doors := "".join(DOORS.keys())
+		var doors := "".join(map.DOORS.keys())
 		# Columns first (one task), then every chunk in parallel.
-		await _run_tasks(func(_i): t.setup(LAYOUT, _floor_ch, doors), 1, 0.05, 0.15, "Laying the stones…")
+		await _run_tasks(func(_i): t.setup(map.LAYOUT, _floor_ch, doors), 1, 0.05, 0.15, "Laying the stones…")
 		var n: int = t.chunk_count()
 		var results := []
 		results.resize(n)
@@ -290,22 +248,26 @@ func _place_mesh(mesh: Mesh, pos: Vector3, yaw := 0.0, scale_v := 1.0) -> MeshIn
 ## (models.gd caches them, so placing them later just reuses the meshes).
 ## Returns the group task, or -1 when there's nothing to build.
 func _start_prop_builds() -> int:
-	var jobs: Array[Callable] = [M.crate, M.barrel, M.brazier, M.lantern_post, M.well, M.bunk, M.table,
-		M.vent, M.forge, M.cache_chest, M.plaque, func(): M.door(2.0, 3.0)]
+	var jobs: Array[Callable] = [M.forge, M.cache_chest, M.plaque]
 	for k in ["ironhide", "quickhands", "fleetfoot", "secondwind"]:
 		var color: Color = preload("res://scripts/game/perks.gd").PERKS[k].color
 		jobs.append(func(): M.tonic_machine(color))
-	for y in H:
-		for x in W:
-			match _ch(x, y):
-				"T":
-					var sd := x * 31 + y
-					jobs.append(func(): M.dead_tree(sd))
-				"g":
-					var sd := x + y * 3
-					jobs.append(func(): M.gravestone(sd))
-	for i in 14:
-		jobs.append(func(): M.ruin(i))
+	if map.has_method("model_jobs"):
+		jobs.append_array(map.model_jobs())
+	else:
+		jobs.append_array([M.crate, M.barrel, M.brazier, M.lantern_post, M.well, M.bunk, M.table,
+			M.vent, func(): M.door(2.0, 3.0)])
+		for y in H:
+			for x in W:
+				match _ch(x, y):
+					"T":
+						var sd := x * 31 + y
+						jobs.append(func(): M.dead_tree(sd))
+					"g":
+						var sd := x + y * 3
+						jobs.append(func(): M.gravestone(sd))
+		for i in 14:
+			jobs.append(func(): M.ruin(i))
 	return WorkerThreadPool.add_group_task(func(i): jobs[i].call(), jobs.size(), -1, true, "Cinderhold: props")
 
 
@@ -351,6 +313,7 @@ func _build_props() -> void:
 					_place_mesh(M.brazier(), c)
 					_add_box(c + Vector3(0, 0.5, 0), Vector3(0.7, 1.0, 0.7))
 					_add_fire(c + Vector3(0, 0.95, 0), 1.0)
+					ambience.add("amb_fire", c + Vector3(0, 1.0, 0), -8.0, 11.0)
 					_add_light(c + Vector3(0, 1.6, 0), Color("ff8a3a"), 9.0, 2.4)
 				"l":
 					_place_mesh(M.lantern_post(), c, jitter * 4.0)
@@ -377,28 +340,28 @@ func _build_props() -> void:
 		_place_mesh(M.ruin(i), p, _rng.randf() * TAU)
 
 
-## Pick this match's ash vents: VENT_QUOTA cells per zone, on open floor,
+## Pick this match's ash vents: the map's VENT_QUOTA cells per zone, on open floor,
 ## clear of props, doors and the players' spawn, and spread apart. The same
 ## seed gives the same vents on every peer.
 func _place_vents() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _vent_seed
 	var blocked := {}
-	for it in PLACEMENTS:
+	for it in map.PLACEMENTS:
 		blocked[it.cell] = true
 		blocked[it.cell + Vector2i(roundi(it.face.x), roundi(it.face.z))] = true
 	var picked: Array[Vector2i] = []
-	for zone in VENT_QUOTA:
+	for zone in map.VENT_QUOTA:
 		var cands: Array[Vector2i] = []
 		for y in range(1, H - 1):
 			for x in range(1, W - 1):
 				var c := Vector2i(x, y)
-				if _zone_of(c) != zone or not ",;.:".contains(_ch(x, y)) or blocked.has(c):
+				if map.zone_of(c) != zone or not map.FLOOR_CHARS.contains(_ch(x, y)) or blocked.has(c):
 					continue
 				var open := true
 				for d in NEIGH:
 					var ch := _ch(x + d.x, y + d.y)
-					if DOORS.has(ch) or not (",;.:S#".contains(ch)):
+					if map.DOORS.has(ch) or not (map.WALKABLE.contains(ch) or ch == "#"):
 						open = false   # keep doorways and props clear
 						break
 				if not open:
@@ -409,7 +372,7 @@ func _place_vents() -> void:
 						far = false
 				if far:
 					cands.append(c)
-		for k in VENT_QUOTA[zone]:
+		for k in map.VENT_QUOTA[zone]:
 			var best := Vector2i(-1, -1)
 			var best_d := -1.0
 			# best of a few random tries: as far from the other vents as we can
@@ -432,14 +395,9 @@ func _place_vents() -> void:
 	for c in picked:
 		var pos := cell_center(c)
 		vents.append({"cell": c, "pos": pos})
-		_place_mesh(M.vent(), pos + Vector3(0, 0.005, 0), rng.randf() * TAU)
+		_place_mesh(map.vent_mesh() if map.has_method("vent_mesh") else M.vent(), pos + Vector3(0, 0.005, 0), rng.randf() * TAU)
 		_add_embers_vent(pos)
-
-
-func _zone_of(c: Vector2i) -> String:
-	if c.y < 13:
-		return "barracks" if c.x < 19 else "hall"
-	return "court" if c.x < 23 else "garden"
+		ambience.add("amb_vent", pos + Vector3(0, 0.3, 0), -9.0, 9.0, rng.randf_range(0.9, 1.1))
 
 
 func _add_light(pos: Vector3, color: Color, rng_m: float, energy: float, shadows := true) -> OmniLight3D:
@@ -596,6 +554,8 @@ func _build_environment() -> void:
 	env.adjustment_enabled = true
 	env.adjustment_contrast = 1.08
 	env.adjustment_saturation = 1.1
+	if map.has_method("tune_environment"):
+		map.tune_environment(env)
 	Settings.configure_environment(env)
 	var we := WorldEnvironment.new()
 	we.environment = env
@@ -661,7 +621,7 @@ func _process(dt: float) -> void:
 # =========================================================================
 
 func _build_doors() -> void:
-	for letter in DOORS:
+	for letter in map.DOORS:
 		var cells: Array[Vector2i] = []
 		for y in H:
 			for x in W:
@@ -677,7 +637,7 @@ func _build_doors() -> void:
 		node.position = center
 		node.rotation.y = 0.0 if horizontal else PI * 0.5
 		var mi := MeshInstance3D.new()
-		mi.mesh = M.door(float(cells.size()), 3.0)
+		mi.mesh = map.door_mesh(float(cells.size())) if map.has_method("door_mesh") else M.door(float(cells.size()), 3.0)
 		node.add_child(mi)
 		var cs := CollisionShape3D.new()
 		var bs := BoxShape3D.new()
@@ -687,7 +647,7 @@ func _build_doors() -> void:
 		node.add_child(cs)
 		for side in [-1.0, 1.0]:
 			var label := Label3D.new()
-			label.text = "%s\n%d" % [DOORS[letter].name.to_upper(), DOORS[letter].cost]
+			label.text = "%s\n%d" % [map.DOORS[letter].name.to_upper(), map.DOORS[letter].cost]
 			label.font = preload("res://assets/fonts/Bungee-Regular.ttf")
 			label.font_size = 40
 			label.pixel_size = 0.004
@@ -698,9 +658,9 @@ func _build_doors() -> void:
 			label.rotation.y = 0.0 if side > 0 else PI
 			node.add_child(label)
 		add_child(node)
-		doors[letter] = {"cost": DOORS[letter].cost, "name": DOORS[letter].name, "cells": cells, "open": false, "node": node, "pos": center}
-		interactables.append({"kind": "door", "key": letter, "cost": DOORS[letter].cost, "pos": center + Vector3(0, 1.0, 0),
-			"radius": 2.4, "label": "open the " + DOORS[letter].name})
+		doors[letter] = {"cost": map.DOORS[letter].cost, "name": map.DOORS[letter].name, "cells": cells, "open": false, "node": node, "pos": center}
+		interactables.append({"kind": "door", "key": letter, "cost": map.DOORS[letter].cost, "pos": center + Vector3(0, 1.0, 0),
+			"radius": 2.4, "label": "open the " + map.DOORS[letter].name})
 
 
 func open_door(letter: String, animate := true) -> void:
@@ -923,7 +883,7 @@ static func yaw_for(face: Vector3) -> float:
 func _build_interactables() -> void:
 	var W_ := preload("res://scripts/game/weapons.gd")
 	var P_ := preload("res://scripts/game/perks.gd")
-	for pl in PLACEMENTS:
+	for pl in map.PLACEMENTS:
 		var cell: Vector2i = pl.cell
 		var face: Vector3 = pl.face
 		var yaw := yaw_for(face)
@@ -934,8 +894,10 @@ func _build_interactables() -> void:
 		match pl.kind:
 			"wallbuy":
 				# mounted on the wall face that looks into the room
-				var wall_center := cell_center(cell)
-				node.position = wall_center + face * 0.5 + Vector3(0, 1.45, 0)
+				var wall_face := cell_center(cell) + face * 0.5
+				if map.has_method("wall_point"):
+					wall_face = map.wall_point(cell, face)
+				node.position = wall_face + Vector3(0, 1.45, 0)
 				var plaque := MeshInstance3D.new()
 				plaque.mesh = M.plaque()
 				node.add_child(plaque)
@@ -952,13 +914,14 @@ func _build_interactables() -> void:
 				_add_light(node.position + face * 0.6 + Vector3(0, 0.6, 0), Color("ffcf8a"), 2.6, 0.5, false)
 			"tonic":
 				var pd: Dictionary = P_.PERKS[pl.key]
-				node.position = cell_center(cell)
+				node.position = map.stand_point(cell, face) if map.has_method("stand_point") else cell_center(cell)
 				var mi := MeshInstance3D.new()
 				mi.mesh = M.tonic_machine(pd.color)
 				node.add_child(mi)
 				_add_label(node, pd.name.to_upper(), Vector3(0, 2.1, -0.27), false, pd.color.lightened(0.4))
 				_add_light(node.position + face * 0.7 + Vector3(0, 1.4, 0), pd.color, 4.5, 1.2, false)
 				walk[cell.y * W + cell.x] = 0
+				ambience.add("amb_hum", node.position + Vector3(0, 1.2, 0), -17.0, 6.0)
 				_add_box(node.position + Vector3(0, 1.0, 0), Vector3(0.95, 2.0, 0.95))
 				it.cost = pd.cost
 				it.label = "drink %s" % pd.name
@@ -974,6 +937,7 @@ func _build_interactables() -> void:
 				_add_box(node.position + face * 0.75 + Vector3(0, 0.3, 0), Vector3(0.8, 0.6, 0.4))
 				_add_light(node.position + face * 0.6 + Vector3(0, 0.6, 0), Color("ff6a1a"), 6.0, 2.5)
 				_add_fire(node.position + face * 0.3 + Vector3(0, 0.4, 0), 0.8)
+				ambience.add("amb_fire", node.position + face * 0.4 + Vector3(0, 0.6, 0), -1.0, 15.0, 0.75)   # a deeper roar
 				_add_label(node, "THE EMBER FORGE\n5000", Vector3(0, 2.6, -0.4), false, Color("ffb070"))
 				it.cost = 5000
 				it.label = "reforge your weapon"

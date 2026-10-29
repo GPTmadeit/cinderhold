@@ -2,6 +2,7 @@ extends Node
 ## Developer helpers enabled by command-line flags after `--`:
 ##   --shot <png> <seconds>   save a screenshot and quit
 ##   --fps-log <seconds>      print average fps over the run, then quit
+##   --map <id>               play that map (outpost, times_square); not saved
 
 var shot_path := ""
 var delay := 0.0
@@ -26,6 +27,11 @@ class Bracket extends Node:
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	var m := OS.get_cmdline_user_args().find("--map")
+	if m != -1 and m + 1 < OS.get_cmdline_user_args().size():
+		Settings.data.gameplay.map = OS.get_cmdline_user_args()[m + 1]
+		if Net.is_host() and not Net.solo:
+			Net.set_meta("match_map", Settings.data.gameplay.map)
 	if "--prof" in OS.get_cmdline_user_args():
 		var a := Bracket.new()
 		a.name = "BracketFirst"
@@ -146,7 +152,7 @@ func _fx_demo(dt: float) -> void:
 		game.fx_root.burst(at - Vector3.UP * 0.4, true)
 
 
-## --cam x,z,yaw,pitch: hold the local player at a spot looking a set way
+## --cam x,z,yaw,pitch[,height]: hold the local player at a spot looking a set way
 ## (degrees), for before/after screenshots.
 func _dev_cam() -> void:
 	var args := OS.get_cmdline_user_args()
@@ -158,7 +164,7 @@ func _dev_cam() -> void:
 		return
 	var v := args[i + 1].split_floats(",")
 	var p = game.local_player
-	p.global_position = Vector3(v[0], 0.0, v[1])
+	p.global_position = Vector3(v[0], v[4] if v.size() > 4 else 0.0, v[1])   # a fifth value lifts the view
 	p.velocity = Vector3.ZERO
 	p.yaw = deg_to_rad(v[2]) if v.size() > 2 else p.yaw
 	p.pitch = deg_to_rad(v[3]) if v.size() > 3 else p.pitch
@@ -175,12 +181,21 @@ func _dev_acts() -> void:
 	var args := OS.get_cmdline_user_args()
 	var i := args.find("--act")
 	var game := get_tree().current_scene
-	# "host@3" presses Host Co-op on the main menu (the real path, unlike --host)
+	# menu actions: "host@3" presses Host Co-op (the real path, unlike --host),
+	# "accept@8" accepts the first friend request
 	if i != -1 and i + 1 < args.size() and game and game.has_method("_host"):
 		for item in args[i + 1].split(","):
-			if item.begins_with("host@") and not _acts_done.has(item) and _t >= float(item.get_slice("@", 1)):
-				_acts_done[item] = true
-				game._host()
+			if _acts_done.has(item) or not "@" in item or _t < float(item.get_slice("@", 1)):
+				continue
+			match item.get_slice("@", 0):
+				"host":
+					_acts_done[item] = true
+					game._host()
+				"accept":
+					var pr: Node = Net.presence()
+					if pr and not pr.requests.is_empty():
+						_acts_done[item] = true
+						pr.accept(pr.requests.keys()[0])
 	if i == -1 or i + 1 >= args.size() or game == null or not "local_player" in game or game.local_player == null:
 		return
 	var p = game.local_player

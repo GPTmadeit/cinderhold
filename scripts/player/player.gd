@@ -101,6 +101,8 @@ var _melee_hit_t := -1.0
 var _release_t := -1.0
 var _arm_l_rest := Transform3D()
 var _shake := 0.0
+var _impact_ms := 0
+var _casing_ms := 0
 
 var _state_t := 0.0
 var _step_t := 0.0
@@ -684,6 +686,7 @@ func _shoot(def: Dictionary, w: Dictionary) -> void:
 		game.hud.hitmarker(any_head)
 		Sfx.play("headshot" if any_head else "hit", -6.0 if not any_head else -2.0, 0.05)
 	Sfx.play(def.sound, -3.0, 0.05)
+	_eject_casing(def)
 	if not Net.solo and game.phase != "loading":
 		_fx_shot.rpc(_muzzle.global_position, ends, String(def.id))
 	_flash_t = 0.05
@@ -698,6 +701,18 @@ func _shoot(def: Dictionary, w: Dictionary) -> void:
 		get_tree().create_timer(0.32).timeout.connect(func(): Sfx.play("rack", -6.0))
 	if w.mag == 0 and w.reserve > 0:
 		get_tree().create_timer(0.25).timeout.connect(_start_reload)
+
+
+## A spent case tinkling on the ground a moment after the shot (shotguns
+## pump theirs out, and the Cinderbolt has none).
+func _eject_casing(def: Dictionary) -> void:
+	if def.get("pump", false) or def.has("chain"):
+		return
+	var now := Time.get_ticks_msec()
+	if now - _casing_ms < 110:
+		return
+	_casing_ms = now
+	get_tree().create_timer(_rng.randf_range(0.28, 0.45)).timeout.connect(func(): Sfx.play_minor("casing", -17.0, 0.12))
 
 
 ## The Cinderbolt arcs from its impact to nearby enemies.
@@ -752,7 +767,7 @@ func _switch_to(i: int) -> void:
 	reload_t = -1.0
 	swap_t = 0.25 if has_perk("quickhands") else 0.45
 	_refresh_viewmodel()
-	Sfx.play("mag_in", -10.0)
+	Sfx.play("swap", -6.0)
 
 
 func _melee() -> void:
@@ -859,6 +874,12 @@ func _arc(from: Vector3, to: Vector3) -> void:
 
 func _impact(pos: Vector3, normal: Vector3, big := false) -> void:
 	game.fx_root.impact(pos, normal, big)
+	# the sound of what it hit: masonry walls, or whatever the floor is
+	var now := Time.get_ticks_msec()
+	if now - _impact_ms > 70:
+		_impact_ms = now
+		var surface: String = "stone" if absf(normal.y) < 0.6 else game.arena.surface_at(pos)
+		Sfx.play_at("impact_" + surface, pos, -6.0, 0.15)
 
 
 @rpc("authority", "unreliable", "call_remote")
@@ -1011,7 +1032,9 @@ func _interaction_tick(dt: float, menu: bool) -> void:
 			prompt_cost = it.cost
 		"wallbuy":
 			var wd := W.get_def(it.key)
-			if _owns(it.key):
+			if _owns(it.key) and _ammo_full(it.key):
+				prompt = "Your %s is full of ammo" % wd.name
+			elif _owns(it.key):
 				prompt = "Press [%s] to buy %s ammo" % [key, wd.name]
 				prompt_cost = wd.ammo_cost
 			else:
@@ -1073,6 +1096,15 @@ func _owns(id: String) -> bool:
 	return false
 
 
+## The gun is loaded and its reserve is topped up: no ammo to buy.
+func _ammo_full(id: String) -> bool:
+	for w in weapons:
+		if w.id == id:
+			var d := W.get_def(id, w.upgraded)
+			return w.mag >= d.mag and w.reserve >= d.reserve
+	return false
+
+
 func _interact_pressed() -> void:
 	if downed or dead:
 		return
@@ -1083,6 +1115,9 @@ func _interact_pressed() -> void:
 		"door":
 			game.request("door", it.key)
 		"wallbuy":
+			if _owns(it.key) and _ammo_full(it.key):
+				Sfx.play("deny")
+				return   # never charge for ammo that wouldn't fit
 			game.request("wallbuy", it.key, _owns(it.key))
 		"tonic":
 			if has_perk(it.key):

@@ -84,6 +84,11 @@ var W := 0
 var H := 0
 var GX := 0
 var GZ := 0
+## Voxels per metre for meshing (maps built on this class may use fewer).
+var vpc := VPC
+var vs := VS
+## Palette entries from here on glow (lit glass, signs).
+var glow_from := 1 << 14
 var cols := PackedInt64Array()
 var kinds := PackedByteArray()       # per cell
 var styles := PackedByteArray()      # per cell: floor style char code
@@ -515,11 +520,27 @@ func chunk_count() -> int:
 
 
 func _chunks_x() -> int:
-	return (W + CHUNK - 1) / CHUNK
+	return (GX / vpc + CHUNK - 1) / CHUNK
 
 
 func _chunks_z() -> int:
-	return (H + CHUNK - 1) / CHUNK
+	return (GZ / vpc + CHUNK - 1) / CHUNK
+
+
+## Which +y faces of this column the per-cell caps (below) replace.
+func _capped_bits(gx: int, gz: int) -> int:
+	return 1 << (WALL_TOP - 1 - Y0) if kinds[(gz / VPC) * W + gx / VPC] == WALL else 0
+
+
+## Faces drawn whole rather than voxel by voxel: one quad per wall cell top.
+func _caps(surf: Array, x0: int, z0: int, x1: int, z1: int) -> void:
+	for cz in range(z0 / VPC, (z1 + VPC - 1) / VPC):
+		for cx in range(x0 / VPC, (x1 + VPC - 1) / VPC):
+			if kinds[cz * W + cx] == WALL:
+				var cap: Color = palette[P_CAP + (cx + cz) % 2]
+				var lin := Color(cap.r, cap.g, cap.b).srgb_to_linear()
+				lin.a = cap.a
+				VB._quad(surf[0], Vector3i(cx * VPC, WALL_TOP - 1, cz * VPC), VB.FACES[2], VPC, VPC, lin, [3, 3, 3, 3], VS, Vector3.ZERO)
 
 
 ## Mesh arrays ([plain, glowing]) for chunk `index`, in world space. Safe to
@@ -530,10 +551,10 @@ func _chunks_z() -> int:
 ## lines up with the face at layer b; most faces touch none of them and skip
 ## the per-corner occlusion maths entirely.
 func mesh_chunk(index: int) -> Array:
-	var x0 := (index % _chunks_x()) * CHUNK * VPC
-	var z0 := (index / _chunks_x()) * CHUNK * VPC
-	var x1 := mini(x0 + CHUNK * VPC, GX)
-	var z1 := mini(z0 + CHUNK * VPC, GZ)
+	var x0 := (index % _chunks_x()) * CHUNK * vpc
+	var z0 := (index / _chunks_x()) * CHUNK * vpc
+	var x1 := mini(x0 + CHUNK * vpc, GX)
+	var z1 := mini(z0 + CHUNK * vpc, GZ)
 	var keys: Array[PackedInt64Array] = []
 	for fi in 6:
 		keys.append(PackedInt64Array())
@@ -558,7 +579,8 @@ func mesh_chunk(index: int) -> Array:
 			if m == floor_m and (c_xm & c_xp & c_zm & c_zp & 2) != 0 \
 					and ((c_xm | c_xp | c_zm | c_zp | c_mm | c_pm | c_mp | c_pp) >> 2) == 0:
 				# flat floor with flat floor all round: one plain top face
-				keys[2].append(top_slot | (gx - x0) << 36 | (gz - z0) << 24 | _color(gx, -1, gz, 2) << 9 | 255)
+				var top := _color(gx, -1, gz, 2)
+				keys[2].append(top_slot | (gx - x0) << 36 | (gz - z0) << 24 | top << 9 | int(top >= glow_from) << 8 | 255)
 				continue
 			var f_xp := m & ~c_xp
 			var f_xm := m & ~c_xm
@@ -570,8 +592,7 @@ func mesh_chunk(index: int) -> Array:
 				continue
 			var rx := gx - x0
 			var rz := gz - z0
-			if kinds[(gz / VPC) * W + gx / VPC] == WALL:
-				f_yp &= ~(1 << (WALL_TOP - 1 - Y0))   # wall tops: one quad per cell, below
+			f_yp &= ~_capped_bits(gx, gz)   # drawn whole by _caps()
 			for fi in 6:
 				var e: int
 				# neighbour masks: -u, +u, -v, +v, -u-v, +u-v, +u+v, -u+v
@@ -635,21 +656,16 @@ func mesh_chunk(index: int) -> Array:
 						var ao2 := 0 if a_pu + a_pv == 2 else 3 - a_pu - a_pv - ((dpp >> b) & 1)
 						var ao3 := 0 if a_mu + a_pv == 2 else 3 - a_mu - a_pv - ((dmp >> b) & 1)
 						aos = ao0 << 6 | ao1 << 4 | ao2 << 2 | ao3
-					target.append(base | b << shift | _color(gx, b + Y0, gz, fi) << 9 | aos)
+					var col := _color(gx, b + Y0, gz, fi)
+					target.append(base | b << shift | col << 9 | int(col >= glow_from) << 8 | aos)
 				keys[fi] = target
 	var surf := [VB._new_arrays(), VB._new_arrays()]
-	for cz in range(z0 / VPC, (z1 + VPC - 1) / VPC):
-		for cx in range(x0 / VPC, (x1 + VPC - 1) / VPC):
-			if kinds[cz * W + cx] == WALL:
-				var cap: Color = palette[P_CAP + (cx + cz) % 2]
-				var lin := Color(cap.r, cap.g, cap.b).srgb_to_linear()
-				lin.a = cap.a
-				VB._quad(surf[0], Vector3i(cx * VPC, WALL_TOP - 1, cz * VPC), VB.FACES[2], VPC, VPC, lin, [3, 3, 3, 3], VS, Vector3.ZERO)
+	_caps(surf, x0, z0, x1, z1)
 	var lo := Vector3i(x0, Y0, z0)
 	for fi in 6:
 		var k: PackedInt64Array = keys[fi]
 		if k.is_empty():
 			continue
 		k.sort()
-		VB._merge(k, fi, lo, palette, surf, VS, Vector3.ZERO)
+		VB._merge(k, fi, lo, palette, surf, vs, Vector3.ZERO)
 	return surf

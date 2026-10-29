@@ -134,6 +134,7 @@ func _gameplay_tab() -> void:
 	_row(v, "Touch look speed", _slider("gameplay", "touch_look", 0.2, 3.0, 0.05))
 	_row(v, "Touch aim assist", _check("gameplay", "aim_assist"))
 	_row(v, "Open co-op port (UPnP)", _check("net", "upnp", "Ask the router when hosting"))
+	_row(v, "Friend status", _check("net", "presence", "Friends see when I'm online, and can invite me"))
 
 
 func _video_tab() -> void:
