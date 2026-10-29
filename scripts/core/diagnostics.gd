@@ -14,7 +14,7 @@ const STATE := DIR + "/session.json"
 const LOG := DIR + "/session.log"
 const LOG_PREV := DIR + "/session.prev.log"
 const REPORT := DIR + "/last_crash.txt"
-const PROBE := DIR + "/exit_probe"   # exists while asking Android why the game exited
+const PROBE := DIR + "/exit_probe_2"   # exists while asking Android why the game exited
 const BEAT := 5.0
 const ROTATE_LINES := 1500
 const REPORT_LINES := 120
@@ -89,7 +89,7 @@ func _ready() -> void:
 	_sink.target = weakref(self)
 	OS.add_logger(_sink)
 	_state = {"running": true, "background": false, "version": get_node("/root/Updater").current_version(),
-		"started": Time.get_unix_time_from_system()}
+		"started": Time.get_unix_time_from_system(), "pid": OS.get_process_id()}
 	_save_state()
 
 
@@ -195,7 +195,12 @@ func _keep_crash_report(prev: Dictionary) -> void:
 			lines.append_array(FileAccess.get_file_as_string(path).split("\n", false))
 	var head := lines.slice(0, 2)
 	var tail := lines.slice(maxi(2, lines.size() - REPORT_LINES))
-	var reason := _android_exit_reason(float(prev.get("started", 0.0)))
+	crashed = true
+	var exit := _android_exit_text(int(prev.get("pid", 0)))
+	if exit_reason_code(exit) in [10, 11, 15, 16]:
+		crashed = false   # closed or force-stopped by the player, or the app was updated
+		return
+	var reason := describe_exit(exit)
 	var when := Time.get_datetime_string_from_unix_time(
 		int(prev.get("beat", prev.get("started", 0))) + Time.get_time_zone_from_system().bias * 60, true)
 	summary = "v%s, %s, around %s" % [prev.get("version", "?"), str(prev.get("where", "starting up")), when]
@@ -207,7 +212,6 @@ func _keep_crash_report(prev: Dictionary) -> void:
 	var f := FileAccess.open(REPORT, FileAccess.WRITE)
 	if f:
 		f.store_string(text)
-	crashed = true
 
 
 ## The saved report text, or "" if there is none.
@@ -219,27 +223,50 @@ func dismiss() -> void:
 	crashed = false
 
 
-## Android 11+ records why each of an app's processes ended. Ask about the
-## last one (if it ended after `since`). Guarded so a failure here can never
-## crash the game twice: the probe file stays behind and later launches skip it.
-func _android_exit_reason(since: float) -> String:
-	if not OS.has_feature("android") or not Engine.has_singleton("AndroidRuntime") or FileAccess.file_exists(PROBE):
+## Android 11+ records why each of an app's processes ended; fetch the record
+## for the crashed session's process as text. Guarded so a failure here can
+## never crash the game twice: the probe file stays behind and later launches
+## skip it.
+func _android_exit_text(pid: int) -> String:
+	if pid <= 0 or not OS.has_feature("android") or not Engine.has_singleton("AndroidRuntime") or FileAccess.file_exists(PROBE):
 		return ""
 	FileAccess.open(PROBE, FileAccess.WRITE)
-	var out := ""
+	var text := ""
 	var ctx = Engine.get_singleton("AndroidRuntime").getApplicationContext()
 	var am = ctx.getSystemService("activity") if ctx != null else null
-	var list = am.getHistoricalProcessExitReasons(ctx.getPackageName(), 0, 1) if am != null else null
-	var info = null
-	if list is Array:
-		info = list[0] if list.size() > 0 else null
-	elif list != null and list.size() > 0:
-		info = list.get(0)
-	if info != null and float(info.getTimestamp()) / 1000.0 >= since:
-		var desc = info.getDescription()
-		out = "%s%s (status %d, %s in use)" % [EXIT_REASONS.get(int(info.getReason()), "reason %d" % info.getReason()),
-			": " + str(desc) if desc != null and str(desc) != "" else "", int(info.getStatus()), _mb(int(info.getPss()) * 1024)]
+	var list = am.getHistoricalProcessExitReasons(ctx.getPackageName(), pid, 1) if am != null else null
+	if list != null:
+		# The Java bridge can't hand back the list's elements (get() returns
+		# a plain Object), but their text carries every field.
+		text = str(list.toString())
 	DirAccess.remove_absolute(PROBE)
+	return text
+
+
+## The ApplicationExitInfo reason code in `text`, or -1.
+static func exit_reason_code(text: String) -> int:
+	var m := RegEx.create_from_string(" reason=(\\d+) ").search(text)
+	return int(m.get_string(1)) if m else -1
+
+
+## One readable line from ApplicationExitInfo text, e.g. "... reason=5 (APP
+## CRASH(NATIVE)) subreason=0 (UNKNOWN) status=11 importance=100 pss=0.00
+## rss=0.00 description=crash state=empty ...".
+static func describe_exit(text: String) -> String:
+	var m := RegEx.create_from_string(" reason=(\\d+) .*? status=(-?\\d+) .*? rss=(\\S+) description=(.*?) state=").search(text)
+	if m == null:
+		return ""
+	var reason := int(m.get_string(1))
+	var status := int(m.get_string(2))
+	var out: String = EXIT_REASONS.get(reason, "reason %d" % reason)
+	if reason == 2 or reason == 5:   # status is the signal
+		out += " (signal %d%s)" % [status, {6: ", SIGABRT", 7: ", SIGBUS", 9: ", SIGKILL", 11: ", SIGSEGV"}.get(status, "")]
+	var desc := m.get_string(4)
+	if desc != "" and desc != "null":
+		out += ": " + desc
+	var rss := m.get_string(3)
+	if rss.to_float() > 0.0:
+		out += ", %s in use" % rss
 	return out
 
 

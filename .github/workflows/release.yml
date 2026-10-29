@@ -80,6 +80,10 @@ jobs:
       - name: Import project
         run: godot --headless --path . --import || true
 
+      # Looping sounds must loop on a sample that exists (Android crashes on the over-read).
+      - name: Check audio loops
+        run: godot --headless --path . res://tests/audio_loops.tscn
+
       - name: Export
         env:
           GODOT_ANDROID_KEYSTORE_RELEASE_USER: cinderhold

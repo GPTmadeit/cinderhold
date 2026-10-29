@@ -45,18 +45,25 @@ func _exit_tree() -> void:
 
 # --- synthesis ------------------------------------------------------------
 
+## Looping streams get a copy of their first sample appended, and loop_end
+## points at it: Godot plays the sample *at* loop_end before wrapping, and a
+## loop_end one past the data read beyond the buffer. Android puts guard
+## pages after large allocations, so that over-read crashed the game at the
+## music's first loop point (desktop allocators let it slide).
 func _wav(samples: PackedFloat32Array, loop := false) -> AudioStreamWAV:
+	var n := samples.size()
+	var frames := n + 1 if loop else n
 	var bytes := PackedByteArray()
-	bytes.resize(samples.size() * 2)
-	for i in samples.size():
-		bytes.encode_s16(i * 2, int(clampf(samples[i], -1.0, 1.0) * 32000.0))
+	bytes.resize(frames * 2)
+	for i in frames:
+		bytes.encode_s16(i * 2, int(clampf(samples[i % n], -1.0, 1.0) * 32000.0))
 	var w := AudioStreamWAV.new()
 	w.format = AudioStreamWAV.FORMAT_16_BITS
 	w.mix_rate = RATE
 	w.data = bytes
 	if loop:
 		w.loop_mode = AudioStreamWAV.LOOP_FORWARD
-		w.loop_end = samples.size()
+		w.loop_end = n   # the last sample: the copy of the first
 	return w
 
 
