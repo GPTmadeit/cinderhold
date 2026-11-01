@@ -13,10 +13,11 @@ Everything in the game is generated in code: the voxel models, the maps, and eve
 - **Co-op**: one player picks **Host Co-op**. Friends pick **Join Co-op** and type the host's address. The game uses **UDP port 47820**.
   - When hosting, the game asks your router to open the port (UPnP) and shows your **internet address** in the lobby, with a button to copy it. If the router has UPnP turned off, the lobby says so: forward UDP 47820 to your computer by hand, or use Tailscale or ZeroTier (the lobby lists those addresses too).
   - The host picks the map in the lobby; everyone else sees it there.
-  - Everyone needs the same version (0.3.0 or later) to play together.
+  - Everyone needs the same version to play together.
 - **Friends**: Main menu → **Friends** shows your friend code. Add friends by code, or with **+ Friend** in a lobby. Friends you've played with can be joined straight from the list.
   - **Status and notifications**: once you've both added each other, you see whether a friend is online and what they're doing (in the menu, in a lobby, hosting, or in a match on a given map and round), and you get a notice when they come online, start hosting, send a friend request or invite you. **Invite** buttons in the lobby send your friends a one-click join.
-  - This goes through a small relay (a Cloudflare Worker, source in `relay/`). It only stores friend codes, display names, who added whom and when you were last seen. Your status, and your internet address while you host, go only to friends who added you back. Your device proves its friend code by signing a challenge, so nobody can pose as you. **Settings → Gameplay → Friend status** turns all of this off.
+  - **Join requests**: on a friend who's hosting, press **Ask to join**. They get a notice (and a line in their lobby) to **Let in** or **Decline**, and once they let you in your game connects and opens their lobby by itself. It only does that for requests you sent.
+  - This goes through a small relay (a Cloudflare Worker, source in `relay/`). It only stores friend codes, display names, who added whom and when you were last seen. Your status, and your internet address while you host, go only to friends who added you back. Like any server it sees the address you connect from; it keeps that only while you're connected and never passes it on, but it does tell a friend whether you share an internet connection, so a host on the same network can hand out a local address. Your device proves its friend code by signing a challenge, so nobody can pose as you. **Settings → Gameplay → Friend status** turns all of this off.
 - **Encryption**: every co-op connection is encrypted (DTLS). Each install makes its own key and certificate on first launch. Joining a friend from the list also checks that it really is them (their certificate is pinned), and every joining player proves their friend code by signing a challenge from the host. Updates are downloaded over HTTPS only.
 - Earn points by hitting and killing Husks. Spend them on doors, weapons on the walls, Tonics (perks), the Relic Cache (a random weapon) and the Ember Forge (weapon upgrades).
 - When a teammate goes down, hold **Interact** next to them to revive them before they bleed out.
@@ -27,7 +28,7 @@ Default keys: WASD, mouse, `Shift` sprint, `C` crouch, `Space` jump, `R` reload,
 
 ## Updates (no reinstalling)
 
-Installed copies update themselves from this repository's releases. Each release includes a small content patch (`cinderhold-X.Y.Z.pck` and `manifest.json`). The game downloads the patch, checks its SHA-256 and applies it on the next launch. A full download is only needed when a release moves to a new Godot engine version, and the game says so when that happens.
+Installed copies update themselves from this repository's releases. Each release includes a small content patch (`cinderhold-X.Y.Z.pck` and `manifest.json`). The game downloads the patch, checks its SHA-256 and applies it on the next launch. Until then the game keeps running the version it started with (its patch file stays on disk until the next launch). A full download is only needed when a release moves to a new Godot engine version, and the game says so when that happens.
 
 No account or token is needed. **Settings → Updates** has the controls, and the main menu shows a badge when an update is available. A GitHub token can be pasted there if GitHub ever rate-limits update checks from your network, but it's optional.
 
@@ -51,8 +52,8 @@ The tag must match `scripts/core/version.gd`. CI needs the repo secrets `ANDROID
 - `godot --path . -- --solo` starts straight into a solo match.
 - `tests/shot.sh out.png 8 --solo` renders a screenshot on a hidden Hyprland workspace, and `--fps-log 14` benchmarks instead.
 - `godot --headless --path . res://tests/compile_all.tscn` compile-checks every script.
-- `res://tests/dtls_pinning.tscn` checks encryption pinning, `res://tests/anim_gallery.tscn` shows every animation pose, and `res://tests/terrain_bench.tscn` and `res://tests/city_bench.tscn` time the map builds.
-- Dev flags after `--`: `--map times_square` picks the map, `--cam x,z,yaw,pitch[,height]` holds the camera, `--act kestrel@4,aim@6,melee@8,grenade@10` scripts actions for screenshots, `--bot 40` plays a match, `--host 2` / `--join 127.0.0.1` run co-op, `--relay ws://127.0.0.1:8787` uses a local friend relay.
+- `res://tests/updater_prune.tscn` checks that old update files are cleared at startup but never the one in use, `res://tests/dtls_pinning.tscn` checks encryption pinning, `res://tests/anim_gallery.tscn` shows every animation pose, and `res://tests/terrain_bench.tscn` and `res://tests/city_bench.tscn` time the map builds.
+- Dev flags after `--`: `--act solo@4` / `host@4` / `askjoin@9` / `letin@9` press menu buttons, `--map times_square` picks the map, `--cam x,z,yaw,pitch[,height]` holds the camera, `--act kestrel@4,aim@6,melee@8,grenade@10` scripts actions for screenshots, `--bot 40` plays a match, `--host 2` / `--join 127.0.0.1` run co-op, `--relay ws://127.0.0.1:8787` uses a local friend relay.
 
 Layout: `scripts/core` (settings, networking, identity, friends and presence, UPnP, audio synth, updater), `scripts/voxel` (greedy voxel mesher and all the models), `scripts/world` (`arena.gd`: doors, vents, enemy flow fields; `terrain.gd`: the bit-packed terrain mesher; `maps/`: one file per map, plus Times Square's builder and generated data), `scripts/game` (match rules, weapons, perks, grenades, effects, procedural animation), `scripts/player`, `scripts/enemy`, `scripts/ui`.
 

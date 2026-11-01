@@ -182,7 +182,9 @@ func _dev_acts() -> void:
 	var i := args.find("--act")
 	var game := get_tree().current_scene
 	# menu actions: "host@3" presses Host Co-op (the real path, unlike --host),
-	# "accept@8" accepts the first friend request
+	# "solo@3" presses Play Solo (unlike --solo), "accept@8" accepts the first
+	# friend request, "askjoin@10" asks a hosting friend to let us in and
+	# "letin@12" lets in the first friend asking
 	if i != -1 and i + 1 < args.size() and game and game.has_method("_host"):
 		for item in args[i + 1].split(","):
 			if _acts_done.has(item) or not "@" in item or _t < float(item.get_slice("@", 1)):
@@ -191,11 +193,28 @@ func _dev_acts() -> void:
 				"host":
 					_acts_done[item] = true
 					game._host()
+				"solo":
+					_acts_done[item] = true
+					game._play_solo()
 				"accept":
 					var pr: Node = Net.presence()
 					if pr and not pr.requests.is_empty():
 						_acts_done[item] = true
 						pr.accept(pr.requests.keys()[0])
+				"askjoin":   # ask the first friend seen hosting to let us in
+					var pr: Node = Net.presence()
+					if pr:
+						for code in pr.statuses:
+							if pr.online(code) and str(pr.statuses[code].get("state", "")) == "hosting" and pr.request_join(code):
+								_acts_done[item] = true
+								print("DEV: asked %s to join" % code)
+								break
+				"letin":     # host: let in the first friend asking
+					var pr: Node = Net.presence()
+					if pr and not pr.join_requests.is_empty():
+						_acts_done[item] = true
+						print("DEV: letting in %s" % pr.join_requests.keys()[0])
+						pr.let_in(pr.join_requests.keys()[0])
 	if i == -1 or i + 1 >= args.size() or game == null or not "local_player" in game or game.local_player == null:
 		return
 	var p = game.local_player

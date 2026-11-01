@@ -45,6 +45,20 @@ func setup() -> void:
 		add_child(pr)
 
 
+## The identity and friends scripts this service runs with. On a patched
+## install these are the patch's own copies (boot.gd compiles the services
+## fresh), and loading identity.gd or friends.gd anywhere else can give a
+## second copy with its own state (an unprepared key, a stale friends list)
+## or an old one cached before the patch was mounted. So the menus and the
+## friend service ask for these instead.
+func identity_script() -> GDScript:
+	return Identity
+
+
+func friends_script() -> GDScript:
+	return Friends
+
+
 ## The friend service (status, requests, invites).
 func presence() -> Node:
 	return get_node_or_null("Presence")
@@ -365,7 +379,14 @@ func _begin(roster: Dictionary, seed: int, map_id: String) -> void:
 	# let the menu draw its loading screen before the map build blocks
 	await get_tree().process_frame
 	await get_tree().process_frame
-	get_tree().change_scene_to_file("res://scenes/game.tscn")
+	var err := get_tree().change_scene_to_file("res://scenes/game.tscn")
+	if err != OK:
+		# the match scene can't be loaded (an update not restarted into yet)
+		var ls := get_tree().root.get_node_or_null("LoadingScreen")
+		if ls:
+			ls.close()
+		_reset()
+		connection_failed.emit("Couldn't load the match (%s). Restart the game to finish updating, then try again." % error_string(err))
 
 
 func return_to_lobby() -> void:

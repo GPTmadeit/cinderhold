@@ -35,6 +35,9 @@ var _busy := false
 
 func setup() -> void:
 	DirAccess.make_dir_recursive_absolute(DIR)
+	# Patches replaced by a newer download stay until the next launch (the
+	# running game may still need them); now only patch.json's one is in use.
+	_prune(str(_read_patch().get("file", "")))
 	_http = HTTPRequest.new()
 	_http.max_redirects = 0
 	_http.use_threads = true
@@ -145,7 +148,8 @@ func download() -> void:
 	var pf := FileAccess.open(DIR.path_join("patch.json"), FileAccess.WRITE)
 	pf.store_string(JSON.stringify(info))
 	pf.close()
-	_prune(file)
+	# The patch this session runs from stays on disk: scenes not loaded yet
+	# (the match) still come from it until the restart.
 	_set_state(State.READY, "v%s is installed. Restart to play it." % latest_version)
 
 
@@ -167,6 +171,14 @@ func open_release_page() -> void:
 func revert_patch() -> void:
 	DirAccess.remove_absolute(DIR.path_join("patch.json"))
 	_set_state(State.IDLE, "Patch removed. Restart to go back to the installed version.")
+
+
+func _read_patch() -> Dictionary:
+	var path := DIR.path_join("patch.json")
+	if not FileAccess.file_exists(path):
+		return {}
+	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
+	return data if data is Dictionary else {}
 
 
 func _prune(keep: String) -> void:

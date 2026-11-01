@@ -6,7 +6,13 @@
 //   - publish their status (in the menu, in a lobby, hosting, in a match),
 //   - see the status of friends who have added them back (mutual friends),
 //   - send friend requests (adding someone who hasn't added you yet),
-//   - invite mutual friends into a game they're hosting.
+//   - invite mutual friends into a game they're hosting,
+//   - ask a hosting friend to let them in, and get their answer.
+//
+// The relay sees the address each socket connects from (as any web server
+// does). It keeps it only on the live socket and never passes it on: it only
+// tells two friends whether they share an internet connection, so a host on
+// the same network can hand out a local address that works.
 //
 // One Durable Object ("global") holds every socket. Sockets hibernate while
 // idle, keep-alive pings are answered without waking it, and everything a
@@ -58,7 +64,8 @@ export class Hub extends DurableObject {
 		// tagged with the claimed code so the player's sockets can be found;
 		// nothing counts until the challenge has been signed
 		this.ctx.acceptWebSocket(server, [code]);
-		server.serializeAttachment({ stage: "new", code, tokens: BURST, t: Date.now() });
+		const ip = request.headers.get("CF-Connecting-IP") || "";
+		server.serializeAttachment({ stage: "new", code, ip, tokens: BURST, t: Date.now() });
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
@@ -117,7 +124,7 @@ export class Hub extends DurableObject {
 					other.close(4000, "signed in elsewhere");
 				}
 			}
-			const ready = { stage: "ready", code: me.code, name: me.name, state: "menu", detail: {}, since: Date.now(), tokens: me.tokens, t: me.t };
+			const ready = { stage: "ready", code: me.code, name: me.name, ip: me.ip || "", state: "menu", detail: {}, since: Date.now(), tokens: me.tokens, t: me.t };
 			ws.serializeAttachment(ready);
 			await this.ctx.storage.put("name:" + me.code, me.name);
 			this.send(ws, { type: "welcome", code: me.code });
@@ -137,6 +144,12 @@ export class Hub extends DurableObject {
 				break;
 			case "invite":
 				await this.invite(me, msg);
+				break;
+			case "join_request":
+				await this.joinRequest(me, msg);
+				break;
+			case "join_reply":
+				await this.joinReply(me, msg);
 				break;
 			case "dismiss":
 				if (CODE_RE.test(String(msg.code || ""))) {
@@ -213,9 +226,21 @@ export class Hub extends DurableObject {
 	async invite(me, msg) {
 		const to = String(msg.to || "").toUpperCase();
 		if (!CODE_RE.test(to) || !(await this.isMutual(me.code, to))) return;
-		const address = typeof msg.address === "string" ? msg.address.slice(0, 64) : "";
-		const port = Number.isInteger(msg.port) ? msg.port : 0;
-		this.sendTo(to, { type: "invite", code: me.code, name: me.name, address, port });
+		this.sendTo(to, { type: "invite", code: me.code, name: me.name, ...where(msg), same_network: this.sameNetwork(me.code, to) });
+	}
+
+	// "Let me into your game": to a mutual friend, who answers with join_reply.
+	async joinRequest(me, msg) {
+		const to = String(msg.to || "").toUpperCase();
+		if (!CODE_RE.test(to) || !(await this.isMutual(me.code, to))) return;
+		this.sendTo(to, { type: "join_request", code: me.code, name: me.name, same_network: this.sameNetwork(me.code, to) });
+	}
+
+	async joinReply(me, msg) {
+		const to = String(msg.to || "").toUpperCase();
+		if (!CODE_RE.test(to) || !(await this.isMutual(me.code, to))) return;
+		const reply = { type: "join_reply", code: me.code, name: me.name, accept: msg.accept === true, same_network: this.sameNetwork(me.code, to) };
+		this.sendTo(to, reply.accept ? { ...reply, ...where(msg) } : reply);
 	}
 
 	async webSocketClose(ws) {
@@ -272,6 +297,14 @@ export class Hub extends DurableObject {
 		return out;
 	}
 
+	// Do two players connect from the same internet address (the same home
+	// network, usually)? Only this answer leaves the relay, never the address.
+	sameNetwork(a, b) {
+		const ia = (this.readySockets(a)[0]?.deserializeAttachment() || {}).ip;
+		const ib = (this.readySockets(b)[0]?.deserializeAttachment() || {}).ip;
+		return Boolean(ia) && ia === ib;
+	}
+
 	readySockets(code) {
 		return this.ctx.getWebSockets(code).filter((s) => (s.deserializeAttachment() || {}).stage === "ready");
 	}
@@ -287,6 +320,14 @@ export class Hub extends DurableObject {
 			// socket already gone
 		}
 	}
+}
+
+// Where to reach a host, as they sent it: their internet address (when their
+// router's port is open), a local network address, and the game port.
+function where(msg) {
+	const text = (v) => (typeof v === "string" ? v.slice(0, 64) : "");
+	const port = Number.isInteger(msg.port) && msg.port > 0 && msg.port < 65536 ? msg.port : 0;
+	return { address: text(msg.address), lan: text(msg.lan), port };
 }
 
 // --- identity (matches scripts/core/identity.gd) -----------------------

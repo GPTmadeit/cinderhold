@@ -7,8 +7,6 @@ const ArenaScript := preload("res://scripts/world/arena.gd")
 const SettingsPanel := preload("res://scripts/ui/settings_panel.gd")
 const M := preload("res://scripts/voxel/models.gd")
 const A := preload("res://scripts/game/rig_anim.gd")
-const Identity := preload("res://scripts/core/identity.gd")
-const Friends := preload("res://scripts/core/friends.gd")
 const LoadingScreen := preload("res://scripts/ui/loading_screen.gd")
 const Diagnostics := preload("res://scripts/core/diagnostics.gd")
 
@@ -30,11 +28,17 @@ var _friend_edit: LineEdit
 var _my_code: Label
 var _copy_addr: Button
 var _invites: HFlowContainer
+var _join_asks: VBoxContainer
 var _map_btns: Array[Button] = []
 var _map_notes: Array[Label] = []
+## identity.gd and friends.gd as Net runs them (see Net.identity_script())
+var Identity
+var Friends
 
 
 func _ready() -> void:
+	Identity = Net.identity_script()
+	Friends = Net.friends_script()
 	Diagnostics.ensure(get_tree())
 	get_tree().paused = false
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -303,7 +307,7 @@ func _build_friends() -> void:
 
 
 func _add_friend_code() -> void:
-	var code := Friends.normalize_code(_friend_edit.text)
+	var code: String = Friends.normalize_code(_friend_edit.text)
 	if code == "":
 		_my_code.text = "That doesn't look like a friend code (10 letters and digits)."
 		return
@@ -337,7 +341,7 @@ func _refresh_friends() -> void:
 			h.add_child(T.button("Ignore", func(): pr.ignore(c2), 120))
 			row.add_child(h)
 			_friends_list.add_child(row)
-	var list := Friends.all()
+	var list: Array = Friends.all()
 	if list.is_empty() and (pr == null or pr.requests.is_empty()):
 		_friends_list.add_child(T.label("No friends yet. Add one by code, or press + Friend in a lobby.", 20, T.MUTED))
 	var hosting := not Net.solo and Net.is_host()
@@ -358,10 +362,20 @@ func _refresh_friends() -> void:
 			where += "  ·  last hosted at %s:%d" % [f.address, int(f.port)]
 		info.add_child(T.label(where, 16, Color("ffb070") if on and status.begins_with("Hosting") else T.MUTED))
 		h.add_child(info)
-		var live: Dictionary = pr.join_info(code) if pr else {}
-		if not live.is_empty():
-			h.add_child(T.button("Join", func(): join_friend_at(code, live.address, live.port), 110))
-		elif str(f.address) != "":
+		var friend_hosting: bool = on and str(pr.statuses[code].get("state", "")) == "hosting"
+		if friend_hosting:
+			# ask to be let in; once they say yes we join and land in their lobby
+			var waiting: bool = pr.asked.has(code)
+			var ask := T.button("Asked…" if waiting else "Ask to join", func(): pass, 160)
+			ask.disabled = waiting
+			ask.pressed.connect(func():
+				if pr.request_join(code):
+					ask.text = "Asked…"
+					ask.disabled = true
+					_toast("Asked %s to let you in. You'll join as soon as they do." % nm, T.EMBER_SOFT))
+			h.add_child(ask)
+		elif str(f.address) != "" and (pr == null or not pr.is_online()):
+			# no friend service: the address they last hosted on may still work
 			h.add_child(T.button("Join", func(): _join_friend(code), 110))
 		if hosting and on and not _in_lobby(code):
 			var btn := T.button("Invite", func(): pass, 120)
@@ -395,12 +409,12 @@ func join_friend_at(code: String, address: String, port: int) -> void:
 		_toast("Couldn't start connecting (%s)." % error_string(err))
 		return
 	_show("main")
-	var f := Friends.find(code)
+	var f: Dictionary = Friends.find(code)
 	_toast("Connecting to %s…" % (f.name if str(f.get("name", "")) != "" else address), T.EMBER_SOFT)
 
 
 func _join_friend(code: String) -> void:
-	var f := Friends.find(code)
+	var f: Dictionary = Friends.find(code)
 	if f.is_empty() or str(f.address) == "":
 		return
 	if not await _identity_ready():
@@ -449,6 +463,9 @@ func _build_lobby() -> void:
 	_roster = VBoxContainer.new()
 	_roster.custom_minimum_size.y = 230
 	v.add_child(_roster)
+	_join_asks = VBoxContainer.new()
+	_join_asks.add_theme_constant_override("separation", 6)
+	v.add_child(_join_asks)
 	_invites = HFlowContainer.new()
 	_invites.add_theme_constant_override("h_separation", 8)
 	v.add_child(_invites)
@@ -518,7 +535,20 @@ func _play_solo() -> void:
 	LoadingScreen.open(get_tree(), "Preparing %s…" % ArenaScript.map_title(Net.match_map()))
 	await get_tree().process_frame
 	await get_tree().process_frame
-	get_tree().change_scene_to_file("res://scenes/game.tscn")
+	var err := get_tree().change_scene_to_file("res://scenes/game.tscn")
+	if err != OK:
+		_match_failed(err)
+
+
+## The match scene couldn't be loaded (files missing after an update that
+## hasn't been restarted into yet): say so instead of loading forever.
+func _match_failed(err: Error) -> void:
+	var ls := LoadingScreen.find(get_tree())
+	if ls:
+		ls.close()
+	Net.leave()
+	_show("main")
+	_toast("Couldn't load the match (%s). Restart the game to finish updating, then try again." % error_string(err))
 
 
 func _host() -> void:
@@ -554,7 +584,7 @@ func _on_net_error(reason: String) -> void:
 	_show("main")
 	var j := Net.join_info()
 	if j.get("pinned", false) and reason.begins_with("Couldn't reach"):
-		var f := Friends.find(str(j.code))
+		var f: Dictionary = Friends.find(str(j.code))
 		reason = "Couldn't connect to %s at %s. If they're hosting, check the address; if they reinstalled the game, remove them from Friends and add them again." % [
 			f.get("name", "your friend"), j.address]
 	_toast(reason)
@@ -582,7 +612,7 @@ func _refresh_lobby() -> void:
 		sw.custom_minimum_size = Vector2(10, 30)
 		h.add_child(sw)
 		var code := str(p.get("code", ""))
-		var friend := Friends.is_friend(code)
+		var friend: bool = Friends.is_friend(code)
 		var n := T.label(str(p.name) + ("  (host)" if id == 1 else "") + ("  (you)" if id == Net.me() else "") + ("  ★ friend" if friend else ""), 24, T.TEXT, true)
 		n.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		h.add_child(n)
@@ -604,7 +634,25 @@ func _refresh_lobby() -> void:
 	_copy_addr.visible = false
 	for c in _invites.get_children():
 		c.queue_free()
+	for c in _join_asks.get_children():
+		c.queue_free()
 	var pr := Net.presence()
+	# friends asking to be let in
+	if host and pr:
+		for code in pr.join_requests:
+			var r: Dictionary = pr.join_requests[code]
+			var row := PanelContainer.new()
+			row.add_theme_stylebox_override("panel", T.box(Color(0.6, 0.9, 0.5, 0.06), Color("9fe07a"), 1, 4, 10))
+			var h := HBoxContainer.new()
+			var nm: String = str(r.name) if str(r.name) != "" else code
+			var l := T.label("%s wants to join" % nm, 21, Color("9fe07a"), true)
+			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			h.add_child(l)
+			var c2: String = code
+			h.add_child(T.button("Let in", func(): pr.let_in(c2), 130))
+			h.add_child(T.button("Decline", func(): pr.turn_away(c2), 130))
+			row.add_child(h)
+			_join_asks.add_child(row)
 	if host and pr:
 		for f in Friends.all():
 			var code: String = f.code

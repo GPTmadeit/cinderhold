@@ -18,6 +18,8 @@ var _rng := RandomNumberGenerator.new()
 
 func add(sound: String, pos: Vector3, vol_db := -6.0, range_m := 12.0, pitch := 1.0) -> void:
 	emitters.append([sound, pos, vol_db, range_m, pitch])
+	if _started:
+		_play(emitters[-1])   # the map is still being built after the sounds were ready
 
 
 func _ready() -> void:
@@ -46,21 +48,7 @@ func _process(dt: float) -> void:
 func _start() -> void:
 	_started = true
 	for e in emitters:
-		var stream: AudioStream = Sfx.streams.get(e[0])
-		if stream == null:
-			continue
-		var p := AudioStreamPlayer3D.new()
-		p.stream = stream
-		p.bus = "SFX"
-		p.position = e[1]
-		p.volume_db = e[2]
-		p.max_distance = e[3]
-		p.unit_size = 2.5
-		p.pitch_scale = e[4]
-		p.attenuation_filter_cutoff_hz = 5000.0
-		add_child(p)
-		# start each loop somewhere different so neighbours don't pulse together
-		p.play(_rng.randf() * stream.get_length())
+		_play(e)
 	_wind = AudioStreamPlayer.new()
 	_wind.stream = Sfx.streams.get("amb_wind")
 	_wind.bus = "SFX"
@@ -68,3 +56,21 @@ func _start() -> void:
 	add_child(_wind)
 	if _wind.stream:
 		_wind.play(_rng.randf() * _wind.stream.get_length())
+
+
+func _play(e: Array) -> void:
+	var stream: AudioStream = Sfx.streams.get(e[0])
+	if stream == null:
+		return
+	var p := AudioStreamPlayer3D.new()
+	p.stream = stream
+	p.bus = "SFX"
+	p.position = e[1]
+	p.volume_db = e[2]
+	p.max_distance = e[3]
+	p.unit_size = 2.5
+	p.pitch_scale = e[4]
+	p.attenuation_filter_cutoff_hz = 5000.0
+	add_child(p)
+	# start each loop somewhere different so neighbours don't pulse together
+	p.play(_rng.randf() * stream.get_length())

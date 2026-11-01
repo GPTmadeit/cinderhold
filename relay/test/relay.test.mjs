@@ -90,6 +90,22 @@ const inv = await b.waitFor((m) => m.type === "invite");
 check("A's invite reaches B", inv && inv.code === A.code && inv.address === "203.0.113.7");
 c.send({ type: "invite", to: B.code, address: "198.51.100.1", port: 1 });
 check("C can't invite B (not mutual)", !(await b.waitFor((m) => m.type === "invite", 600)));
+check("an invite says whether they share a network", inv && typeof inv.same_network === "boolean");
+
+// B asks to join A's game; A lets B in, then turns down a second request
+b.send({ type: "join_request", to: A.code });
+const ask = await a.waitFor((m) => m.type === "join_request");
+check("B's join request reaches A", ask && ask.code === B.code && typeof ask.same_network === "boolean");
+c.send({ type: "join_request", to: A.code });
+check("C can't ask A (not mutual)", !(await a.waitFor((m) => m.type === "join_request" && m.code === C.code, 600)));
+a.send({ type: "join_reply", to: B.code, accept: true, address: "203.0.113.7", lan: "192.168.1.20", port: 47820 });
+const yes = await b.waitFor((m) => m.type === "join_reply");
+check("A's yes reaches B with where to connect", yes && yes.accept === true && yes.code === A.code
+	&& yes.address === "203.0.113.7" && yes.lan === "192.168.1.20" && yes.port === 47820);
+b.inbox.length = 0;
+a.send({ type: "join_reply", to: B.code, accept: false, address: "203.0.113.7", port: 47820 });
+const no = await b.waitFor((m) => m.type === "join_reply");
+check("a no carries no address", no && no.accept === false && no.address === undefined);
 
 b.ws.close();
 const off = await a.waitFor((m) => m.type === "presence" && m.code === B.code && m.online === false);
