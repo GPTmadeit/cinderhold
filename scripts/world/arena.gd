@@ -12,6 +12,9 @@ const VB := preload("res://scripts/voxel/voxel_builder.gd")
 const M := preload("res://scripts/voxel/models.gd")
 
 const TerrainScript := preload("res://scripts/world/terrain.gd")
+const TERRAIN_SHADER := preload("res://shaders/terrain.gdshader")
+## Rounded terrain (smooth_chunk + terrain shader) instead of greedy cubes.
+const ROUNDED_TERRAIN := true
 const MAPS := {
 	"outpost": preload("res://scripts/world/maps/outpost.gd"),
 	"times_square": preload("res://scripts/world/maps/times_square.gd"),
@@ -171,21 +174,46 @@ static var _terrain_meshes: Array[ArrayMesh] = []
 func _build_terrain() -> void:
 	if _terrain_meshes.is_empty():
 		var t = TerrainScript.new()
+		t.carve = not ROUNDED_TERRAIN
 		var doors := "".join(map.DOORS.keys())
 		# Columns first (one task), then every chunk in parallel.
 		await _run_tasks(func(_i): t.setup(map.LAYOUT, _floor_ch, doors), 1, 0.05, 0.15, "Laying the stones…")
 		var n: int = t.chunk_count()
 		var results := []
 		results.resize(n)
-		await _run_tasks(func(i): results[i] = t.mesh_chunk(i), n, 0.15, 0.65, "Raising the walls…")
-		for i in n:
-			_terrain_meshes.append(VB.arrays_to_mesh(results[i], TerrainScript.VS, Vector3.ZERO, 2.5, false))
+		if ROUNDED_TERRAIN:
+			await _run_tasks(func(i): results[i] = t.smooth_chunk(i), n, 0.15, 0.65, "Raising the walls…")
+			for i in n:
+				_terrain_meshes.append(_terrain_mesh(results[i]))
+		else:
+			await _run_tasks(func(i): results[i] = t.mesh_chunk(i), n, 0.15, 0.65, "Raising the walls…")
+			for i in n:
+				_terrain_meshes.append(VB.arrays_to_mesh(results[i], TerrainScript.VS, Vector3.ZERO, 2.5, false))
 	for i in _terrain_meshes.size():
 		var mi := MeshInstance3D.new()
 		mi.mesh = _terrain_meshes[i]
 		mi.name = "Chunk_%d" % i
 		add_child(mi)
 	_build_colliders()
+
+
+## One rounded terrain chunk with the terrain material (shaders/terrain.gdshader).
+func _terrain_mesh(sa: Dictionary) -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	if sa.v.is_empty():
+		return mesh
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = sa.v
+	arr[Mesh.ARRAY_NORMAL] = sa.n
+	arr[Mesh.ARRAY_COLOR] = sa.c
+	arr[Mesh.ARRAY_INDEX] = sa.i
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	var m := ShaderMaterial.new()
+	m.shader = TERRAIN_SHADER
+	m.set_shader_parameter("detail", Settings.quality() >= 1)
+	mesh.surface_set_material(0, m)
+	return mesh
 
 
 ## Run job(i) for i in [0, count) on the worker pool, keeping the loading

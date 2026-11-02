@@ -106,6 +106,9 @@ var _cobble_tab := PackedByteArray()  # [(gz / 6) * GX + gx] -> palette
 var _plank_tab := PackedByteArray()   # [(gz / 4) * GX + gx] -> palette, +64 = nail column
 var _face_layer := PackedByteArray()  # per column: 1 = a wall's outermost layer (stone, not mortar)
 var _padded := PackedInt64Array()     # cols with a border of FULL columns, (GX + 2) wide
+## Carve the voxel-sized relief (mortar grooves, tile grout, cobble gaps,
+## grass). The rounded mesher (smooth_chunk) leaves it to the shader instead.
+var carve := true
 
 
 func _init() -> void:
@@ -322,6 +325,8 @@ func _wall_relief() -> void:
 					var room := cols[ri]
 					var proud := 0
 					for y in range(PLINTH, WALL_TOP - COPING):
+						if not carve:
+							break
 						var r := y - PLINTH
 						if r % COURSE == COURSE - 1:
 							surf &= ~(1 << (y - Y0))     # bed joint: a groove
@@ -357,6 +362,8 @@ func _wall_relief() -> void:
 ## Floors: grout between the hall's tiles and the courtyard's cobbles, grass
 ## tufts and pebbles in the garden. Plank floors stay flat.
 func _floor_relief() -> void:
+	if not carve:
+		return
 	var top := 1 << (-1 - Y0)
 	for cz in H:
 		for cx in W:
@@ -669,3 +676,253 @@ func mesh_chunk(index: int) -> Array:
 		k.sort()
 		VB._merge(k, fi, lo, palette, surf, vs, Vector3.ZERO)
 	return surf
+
+
+# =========================================================================
+# Rounded meshing
+# =========================================================================
+
+## Surfaces of the rounded terrain. Vertex alpha carries id / 32; the stone,
+## tile, cobble and plank patterns are drawn by shaders/terrain.gdshader.
+const M_STONE := 0
+const M_STONE_OUT := 1
+const M_PLINTH := 2
+const M_CAP := 3
+const M_TILE := 4
+const M_CARPET := 5
+const M_COBBLE := 6
+const M_EARTH := 7
+const M_PLANK := 8
+const M_BEAM := 9
+const M_SILL := 10
+const M_LINTEL := 11
+const M_COUNT := 12
+const LS := 2               # fine voxels per lattice cell
+const SMOOTH_PASSES := 4    # Taubin passes (λ, μ alternating)
+const MARGIN := 6           # lattice cells meshed around a chunk so seams agree
+const POP2 := [0, 1, 1, 2]
+
+
+## Mesh arrays for chunk `index` as a rounded surface (world space).
+##
+## The columns are resampled on a lattice of LS fine voxels (a cell is solid
+## when at least half of it is), every exposed lattice face becomes a quad,
+## and the quads' corners are relaxed with Taubin smoothing, which rounds
+## edges and corners while flat faces stay exactly flat. Quads that didn't
+## move (and aren't in a crease's shade) are merged back into big quads with
+## the voxel builder's greedy merge, so open floors and wall faces stay cheap.
+## The chunk is meshed with a margin of neighbouring cells, so the smoothing
+## sees the same neighbourhood on both sides of a seam.
+func smooth_chunk(index: int) -> Dictionary:
+	var span := CHUNK * vpc / LS
+	var cx0 := (index % _chunks_x()) * span
+	var cz0 := (index / _chunks_x()) * span
+	var cx1 := mini(cx0 + span, GX / LS)
+	var cz1 := mini(cz0 + span, GZ / LS)
+	var ox := cx0 - MARGIN
+	var oz := cz0 - MARGIN
+	var nx := cx1 - cx0 + 2 * MARGIN
+	var nz := cz1 - cz0 + 2 * MARGIN
+	# lattice columns: bit b is layer b - 1 (fine y Y0 + 2(b - 1)); bit 0 is solid ground
+	var lat := PackedInt64Array()
+	lat.resize(nx * nz)
+	for z in nz:
+		for x in nx:
+			var gx := (ox + x) * LS
+			var gz := (oz + z) * LS
+			var a := _col(gx, gz)
+			var b := _col(gx + 1, gz)
+			var c := _col(gx, gz + 1)
+			var d := _col(gx + 1, gz + 1)
+			var m := 1
+			var any := a | b | c | d
+			for j in 32:
+				var sh := 2 * j
+				if (any >> sh) & 3 == 0:
+					continue
+				var cnt: int = POP2[(a >> sh) & 3] + POP2[(b >> sh) & 3] + POP2[(c >> sh) & 3] + POP2[(d >> sh) & 3]
+				if cnt >= 4:
+					m |= 1 << (j + 1)
+			lat[z * nx + x] = m
+	# --- lattice faces, corners shared ---
+	var ny := 35
+	var lnx := nx + 1
+	var lnxy := lnx * (ny + 1)
+	var vid := PackedInt32Array()
+	vid.resize(lnxy * (nz + 1))
+	vid.fill(-1)
+	var pos := PackedVector3Array()
+	var quads := PackedInt32Array()      # 4 corner ids per quad
+	var qinfo := PackedInt32Array()      # per quad: fi | mat << 3 | inside << 8, then the cell x, b, z
+	for z in range(1, nz - 1):
+		for x in range(1, nx - 1):
+			var i := z * nx + x
+			var m := lat[i]
+			var fm := [m & ~lat[i + 1], m & ~lat[i - 1], m & ~(m >> 1), m & ~(m << 1) & ~1, m & ~lat[i + nx], m & ~lat[i - nx]]
+			var inside := int(x >= MARGIN and z >= MARGIN and x < nx - MARGIN and z < nz - MARGIN)
+			for fi in 6:
+				var e: int = fm[fi]
+				if fi == 2:
+					e &= ~(1 << 33)
+				while e != 0:
+					var low := e & -e
+					e ^= low
+					var b: int = _bitpos[low]
+					var f: Array = VB.FACES[fi]
+					var nn: Vector3i = f[0]
+					var u: Vector3i = f[1]
+					var v: Vector3i = f[2]
+					var base := Vector3i(x, b, z)
+					if nn.x + nn.y + nn.z > 0:
+						base += nn
+					for k in 4:
+						var lp: Vector3i = base + (u if k == 1 or k == 2 else Vector3i.ZERO) + (v if k >= 2 else Vector3i.ZERO)
+						var li := lp.x + lp.y * lnx + lp.z * lnxy
+						if vid[li] == -1:
+							vid[li] = pos.size()
+							pos.append(Vector3(lp))
+						quads.append(vid[li])
+					var mat := _smooth_material((ox + x) * LS, Y0 + 2 * (b - 1), (oz + z) * LS, fi)
+					qinfo.append_array([fi | mat << 3 | inside << 8, x, b, z])
+	var nv := pos.size()
+	var nq := quads.size() / 4
+	var surf := [VB._new_arrays(), VB._new_arrays()]
+	if nq == 0:
+		return surf[0]
+	# --- Taubin smoothing over the quad edges ---
+	var orig := pos.duplicate()
+	var acc := PackedVector3Array()
+	acc.resize(nv)
+	var cnt := PackedFloat32Array()
+	cnt.resize(nv)
+	for pass_i in SMOOTH_PASSES:
+		acc.fill(Vector3.ZERO)
+		cnt.fill(0.0)
+		for q in nq:
+			var o := q * 4
+			for k in 4:
+				var va := quads[o + k]
+				var vb := quads[o + (k + 1) % 4]
+				acc[va] += pos[vb]
+				acc[vb] += pos[va]
+				cnt[va] += 1.0
+				cnt[vb] += 1.0
+		var lam := 0.55 if pass_i % 2 == 0 else -0.5
+		for vi in nv:
+			pos[vi] += (acc[vi] / cnt[vi] - pos[vi]) * lam
+	# --- normals, then occlusion from the lattice ---
+	var nrm := PackedVector3Array()
+	nrm.resize(nv)
+	for q in nq:
+		var o := q * 4
+		var p0 := pos[quads[o]]
+		var fn := (pos[quads[o + 1]] - p0).cross(pos[quads[o + 2]] - p0) + (pos[quads[o + 2]] - p0).cross(pos[quads[o + 3]] - p0)
+		for k in 4:
+			nrm[quads[o + k]] += fn
+	var ao := PackedFloat32Array()
+	ao.resize(nv)
+	for vi in nv:
+		nrm[vi] = nrm[vi].normalized()
+		var s := pos[vi] + nrm[vi] * 0.9
+		ao[vi] = clampf(1.35 - 1.7 * _lat_sample(lat, nx, nz, s), 0.4, 1.0)
+	# --- emit: untouched quads merge, the rest go out as they are ---
+	var pivot := Vector3(0, 1 - Y0 / 2.0, 0)
+	var scale := LS * vs
+	var shift := Vector3(ox, 0, oz)
+	var keys: Array[PackedInt64Array] = []
+	for fi in 6:
+		keys.append(PackedInt64Array())
+	var target: Dictionary = surf[0]
+	for q in nq:
+		var info := qinfo[q * 4]
+		if info >> 8 == 0:
+			continue
+		var fi := info & 7
+		var mat := (info >> 3) & 31
+		var o := q * 4
+		var fnv := Vector3(VB.FACES[fi][0])
+		var flat := true
+		for k in 4:
+			var vi := quads[o + k]
+			if pos[vi].distance_squared_to(orig[vi]) > 1e-4 or nrm[vi].dot(fnv) < 0.9995 or ao[vi] < 0.999:
+				flat = false
+				break
+		if flat:
+			var cell := Vector3i(qinfo[q * 4 + 1], qinfo[q * 4 + 2], qinfo[q * 4 + 3])
+			var f: Array = VB.FACES[fi]
+			var plane: int = cell[VB._axis(f[0])]
+			var u: int = cell[VB._axis(f[1])]
+			var v: int = cell[VB._axis(f[2])]
+			keys[fi].append(plane << 48 | v << 36 | u << 24 | mat << 9 | 255)
+			continue
+		var start: int = target.v.size()
+		for k in 4:
+			var vi := quads[o + k]
+			target.v.append((pos[vi] + shift - pivot) * scale)
+			target.n.append(nrm[vi])
+			target.c.append(Color(ao[vi], ao[vi], ao[vi], (mat + 0.5) / 32.0))
+		# split along the shorter diagonal so rounded edges stay convex
+		if pos[quads[o]].distance_squared_to(pos[quads[o + 2]]) <= pos[quads[o + 1]].distance_squared_to(pos[quads[o + 3]]):
+			target.i.append_array([start, start + 2, start + 1, start, start + 3, start + 2])
+		else:
+			target.i.append_array([start, start + 3, start + 1, start + 1, start + 3, start + 2])
+	var colors: Array[Color] = []
+	for mi in M_COUNT:
+		colors.append(Color(1, 1, 1, (mi + 0.5) / 32.0))
+	for fi in 6:
+		if keys[fi].is_empty():
+			continue
+		keys[fi].sort()
+		VB._merge(keys[fi], fi, Vector3i(ox, 0, oz), colors, surf, scale, pivot)
+	return surf[0]
+
+
+## Lattice occupancy at a lattice-space point (cell centres at +0.5), trilinear.
+func _lat_sample(lat: PackedInt64Array, nx: int, nz: int, p: Vector3) -> float:
+	var u := p - Vector3(0.5, 0.5, 0.5)
+	var x0 := floori(u.x)
+	var y0 := floori(u.y)
+	var z0 := floori(u.z)
+	var t := u - Vector3(x0, y0, z0)
+	var sum := 0.0
+	for dz in 2:
+		for dx in 2:
+			var x := x0 + dx
+			var z := z0 + dz
+			if x < 0 or z < 0 or x >= nx or z >= nz:
+				continue
+			var m := lat[z * nx + x]
+			var w := (t.x if dx else 1.0 - t.x) * (t.z if dz else 1.0 - t.z)
+			for dy in 2:
+				var y := y0 + dy
+				if y >= 0 and y < 63 and (m >> y) & 1:
+					sum += w * (t.y if dy else 1.0 - t.y)
+	return sum
+
+
+## The surface a lattice cell at fine (gx, gy, gz) shows on face `fi`.
+func _smooth_material(gx: int, gy: int, gz: int, fi: int) -> int:
+	var cx := clampi(gx / VPC, 0, W - 1)
+	var cz := clampi(gz / VPC, 0, H - 1)
+	var ci := cz * W + cx
+	match kinds[ci]:
+		WALL:
+			if gy >= WALL_TOP - COPING or fi == 2:
+				return M_CAP
+			if gy < PLINTH:
+				return M_PLINTH
+			return M_STONE_OUT if cz > 13 else M_STONE
+		DOOR:
+			return M_LINTEL if gy >= DOOR_TOP else M_SILL
+	if gy >= 48:
+		return M_BEAM
+	if gy >= 0:
+		return M_PLINTH if gy < PLINTH else M_CAP
+	match styles[ci]:
+		59:
+			return M_CARPET if _carpet(cx, cz) else M_TILE
+		46:
+			return M_COBBLE
+		58:
+			return M_EARTH
+	return M_PLANK

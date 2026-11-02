@@ -58,6 +58,8 @@ static func F(x: int, y: int, z: int) -> Vector3i:
 ## it pivots) and hangs from `parent` ("" = the model root).
 static func _part(b: VB, joint: Vector3, scale: float, parent := "") -> Dictionary:
 	b.dynamic = true
+	if b.smooth <= 1:
+		b.smooth = 2     # soft, sculpted limbs; heads and big bodies ask for more
 	return {"mesh": b.build(scale, joint), "joint": joint * scale, "parent": parent}
 
 
@@ -159,6 +161,8 @@ static func _husk(kind: String, variant: int) -> Dictionary:
 		h.fbox(F(px, 61, pz), F(px, 62 + rng.randi_range(0, 1), pz), Color("1e1a17"), 0.05)
 	h.paint(V(-3, 28, 3), V(-1, 30, 3), Color("3a1a14"), 0.05)  # scalp wound
 	h.fbox(F(-4, 58, 7), F(-3, 59, 7), EMBER, 0.0, true)
+	h.smooth = 3        # faces: fine lattice, so sockets, teeth and pupils survive
+	h.smooth_step = 1
 	parts.head = _part(h, Vector3(0.5, 24, 0.5), CHAR_SCALE, "torso")
 
 	# --- torso ---
@@ -290,6 +294,8 @@ static func _brute() -> Dictionary:
 	h.box(V(-3, 28, -5), V(3, 29, -5), Color("2a1414"), 0.0)       # maw
 	for fx in range(-6, 8, 2):
 		h.fbox(F(fx, 57, -10), F(fx, 59, -10), BONE, 0.05)        # fangs
+	h.smooth = 3        # faces: fine lattice, so sockets, teeth and pupils survive
+	h.smooth_step = 1
 	parts.head = _part(h, Vector3(0.5, 28, 0.5), s, "torso")
 
 	var t := VB.new(RES)
@@ -317,6 +323,7 @@ static func _brute() -> Dictionary:
 		for k in 5:
 			cx += rng.randi_range(-1, 1)
 			t.fpaint(F(cx, cy + k, 7), F(cx, cy + k, 7), crack, 0.0, true)
+	t.smooth = 2
 	parts.torso = _part(t, Vector3(0.5, 14, 0.5), s)
 
 	for side in [-1, 1]:
@@ -396,6 +403,8 @@ static func _survivor(color_idx: int) -> Dictionary:
 		h.fpaint(F(fx, 48, -8), F(fx, 51, -8), accent.darkened(0.35), 0.04)
 	h.box(V(-4, 27, -1), V(-4, 28, 1), helmet, 0.05)
 	h.box(V(4, 27, -1), V(4, 28, 1), helmet, 0.05)
+	h.smooth = 3        # faces: fine lattice, so sockets, teeth and pupils survive
+	h.smooth_step = 1
 	parts.head = _part(h, Vector3(0.5, 24, 0.5), CHAR_SCALE, "torso")
 
 	var t := VB.new(RES)
@@ -647,6 +656,8 @@ static func _gun(id: String, upgraded: bool) -> ArrayMesh:
 		var z1 := int(b.end.z) - 3
 		var stripe_y := int(b.position.y + b.size.y * 0.35)
 		g.paint(V(-2, stripe_y, z0), V(2, stripe_y, z1), EMBER, 0.0, true)
+	g.smooth = 1          # a slight bevel on the fine grid
+	g.smooth_step = 1
 	return g.build(GUN_SCALE, Vector3(0.5, 0, 0.5), 3.5 if upgraded else 2.5)
 
 
@@ -667,6 +678,7 @@ static func arms() -> Dictionary:
 			b.fbox(F(3, -1, -9), F(3, 1, -6), Color("2a2620"), 0.05)  # thumb
 			b.fpaint(F(-2, 2, -6), F(3, 2, -3), Color("3a342c"), 0.02)  # glove seam
 			b.paint(V(-1, 1, 7), V(1, 1, 9), Color("e8803a"), 0.04)   # armband
+			b.smooth = 1
 			parts["r" if side > 0 else "l"] = b.build(0.02, Vector3(0.5, 0, 0.5))
 		return parts)
 
@@ -694,6 +706,8 @@ static func grenade() -> ArrayMesh:
 		b.fbox(F(-2, 7, 0), F(-1, 7, 0), BRASS.lightened(0.2), 0.0)  # pin ring
 		b.fput(F(-3, 6, 0), BRASS.lightened(0.2), 0.0)
 		b.fput(F(-3, 5, 0), BRASS.lightened(0.2), 0.0)
+		b.smooth = 2
+		b.smooth_step = 1
 		return b.build(GUN_SCALE, Vector3(0.25, 0.25, 0.25), 3.0))
 
 
@@ -714,6 +728,8 @@ static func knife() -> ArrayMesh:
 			b.fput(F(0, -2, z), steel.lightened(0.35), 0.0)  # honed edge
 			if t < 0.75:
 				b.fput(F(0, 1, z), EMBER, 0.0, true)          # a cinder line in the fuller
+		b.smooth = 1
+		b.smooth_step = 1
 		return b.build(GUN_SCALE, Vector3(0.25, 0.25, 0.25), 3.0))
 
 
@@ -749,6 +765,7 @@ static func barrel() -> ArrayMesh:
 						var c := Color("6a4a2c") if y not in [2, 12] else IRON
 						b.put(V(x, y, z), c, 0.09)
 		b.paint(V(-3, 14, -3), V(3, 14, 3), Color("3a2a1a"), 0.05)
+		b.smooth = 1
 		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5)))
 
 
@@ -773,6 +790,7 @@ static func brazier() -> ArrayMesh:
 					b.put(V(x, 13, z), EMBER_HOT if hot else EMBER, 0.12, true)
 					if d < 3.5 and hash(V(z, 1, x)) % 2 == 0:
 						b.put(V(x, 14, z), Color("3a2a22"), 0.1)
+		b.smooth = 1
 		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5), 3.0))
 
 
@@ -786,6 +804,7 @@ static func lantern_post() -> ArrayMesh:
 		b.box(V(6, 31, -1), V(7, 33, 0), EMBER_HOT, 0.0, true)
 		b.box(V(5, 35, -2), V(8, 35, 1), IRON, 0.04)
 		b.put(V(6, 36, -1), IRON, 0.0)
+		b.smooth = 1
 		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5), 3.5))
 
 
@@ -922,6 +941,7 @@ static func powerup(kind: String) -> ArrayMesh:
 				b.put(V(0, 8, 0), EMBER_HOT, 0.0, true)
 				b.put(V(1, 9, 0), EMBER, 0.0, true)
 				b.paint(V(-6, -1, -6), V(6, 1, 6), Color("b03020"), 0.0, true)
+		b.smooth = 1
 		return b.build(0.04, Vector3(0.5, 0, 0.5), 2.0))
 
 
@@ -1008,6 +1028,7 @@ static func well() -> ArrayMesh:
 		b.box(V(-10, 32, -7), V(10, 33, 7), WOOD.darkened(0.25), 0.1)
 		b.box(V(0, 18, 0), V(0, 27, 0), Color("8a7a5a"), 0.0)             # rope
 		b.box(V(-2, 15, -2), V(2, 18, 2), Color("5a4028"), 0.08)          # bucket
+		b.smooth = 1
 		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5)))
 
 
@@ -1035,6 +1056,7 @@ static func dead_tree(seed_v: int) -> ArrayMesh:
 			for z in range(-5, 6):
 				if Vector2(x, z).length() < 5 and rng.randf() < 0.4:
 					b.put(V(x, 0, z), bark.darkened(0.2), 0.1)
+		b.smooth = 1
 		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5)))
 
 
@@ -1052,6 +1074,7 @@ static func gravestone(seed_v: int) -> ArrayMesh:
 		b.box(V(-6, 0, -9), V(6, 1, -3), Color("3a3028"), 0.12)             # grave mound
 		if seed_v % 2 == 0:
 			b.box(V(-2, 2, -7), V(-1, 3, -6), EMBER, 0.0, true)               # candle stub
+		b.smooth = 1
 		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5)))
 
 

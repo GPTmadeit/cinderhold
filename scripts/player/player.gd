@@ -17,6 +17,11 @@ const AIM_WALK := 2.9
 const CRAWL := 0.9
 const JUMP := 5.6               # ~1.05 m: enough to land on crates, barrels and tables
 const GRAVITY := 15.0
+const GROUND_ACCEL := 11.0      # how fast the feet reach the wanted speed (1/s)
+const AIR_ACCEL := 7.0          # m/s² of steering in the air; momentum is kept
+const SLIDE_BOOST := 1.18       # × sprint speed when a slide starts
+const SLIDE_FRICTION := 5.5     # m/s² lost while sliding
+const SLIDE_TIME := 1.0
 const EYE := 1.62
 const EYE_CROUCH := 1.1
 const EYE_DOWN := 0.55
@@ -26,6 +31,7 @@ const STATE_RATE := 20.0
 const MAX_SLOTS := 2
 const MAX_GRENADES := 4
 const MASK_SHOT := 1 | 4
+const PUSH_PER_DAMAGE := 0.045     # m/s of shove per point of damage
 
 var game: Node
 var peer_id := 1
@@ -120,6 +126,14 @@ var _sight: Dictionary = {}          # models.gd gun_sight() of the gun in hand
 var _reticle: MeshInstance3D
 var _rng := RandomNumberGenerator.new()
 var _last_pos := Vector3.ZERO
+var _slide_t := 0.0            # > 0 while sliding
+var _slide_cd := 0.0
+var _crouch_was := false
+var _knock_t := 0.0            # a shove just landed: the feet don't fight it yet
+var _land_dip := 0.0           # metres the view sinks on a hard landing, springing back
+var _land_vel := 0.0
+var _land_dip_prev := 0.0
+var _slide_roll := 0.0
 
 
 func is_local() -> bool:
@@ -310,7 +324,8 @@ func _viewmodel_materials(mi: MeshInstance3D) -> void:
 		var src: ShaderMaterial = mi.mesh.surface_get_material(i)
 		if not _vm_mats.has(src):
 			var m := src.duplicate() as ShaderMaterial
-			m.shader = preload("res://shaders/voxel_viewmodel.gdshader")
+			var rounded := src.shader == preload("res://shaders/voxel_smooth.gdshader") or src.shader == preload("res://shaders/voxel_smooth_static.gdshader")
+			m.shader = preload("res://shaders/voxel_smooth_viewmodel.gdshader") if rounded else preload("res://shaders/voxel_viewmodel.gdshader")
 			_vm_mats[src] = m
 		mi.set_surface_override_material(i, _vm_mats[src])
 
@@ -424,7 +439,8 @@ func _physics_process_body(dt: float) -> void:
 		add_look(stick * stick.length() * dt * 3.2 * float(Settings.get_v("gameplay", "sensitivity")))
 
 	var input := Vector2.ZERO if menu else Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	crouching = not downed and not menu and Input.is_action_pressed("crouch")
+	var crouch_held := not downed and not menu and Input.is_action_pressed("crouch")
+	crouching = crouch_held
 	aiming = not menu and Input.is_action_pressed("aim") and swap_t <= 0.0 and not weapon().is_empty() and reload_t < 0.0
 	sprinting = not menu and Input.is_action_pressed("sprint") and input.y < -0.3 and not aiming and not crouching and not downed
 	if sprinting and reload_t >= 0.0 and not has_perk("fleetfoot"):
@@ -446,19 +462,56 @@ func _physics_process_body(dt: float) -> void:
 	var wish := (transform.basis * Vector3(input.x, 0, input.y))
 	if wish.length() > 1.0:
 		wish = wish.normalized()
-	var accel := 12.0 if is_on_floor() else 3.0
-	var hv := Vector3(velocity.x, 0, velocity.z).lerp(wish * speed, clampf(accel * dt, 0.0, 1.0))
+	var hv := Vector3(velocity.x, 0, velocity.z)
+	var grounded := is_on_floor()
+	_slide_cd -= dt
+	_knock_t -= dt
+	# crouching at a run starts a slide that carries the run's momentum
+	if crouch_held and not _crouch_was and grounded and _slide_t <= 0.0 and _slide_cd <= 0.0 and hv.length() > WALK + 0.4:
+		_slide_t = SLIDE_TIME
+		_slide_cd = SLIDE_TIME + 0.35
+		hv = hv.normalized() * maxf(hv.length(), SPRINT * SLIDE_BOOST * (1.15 if has_perk("fleetfoot") else 1.0))
+		Sfx.play("land", -9.0, 0.2)
+		shake(0.12)
+	_crouch_was = crouch_held
+	if _slide_t > 0.0:
+		_slide_t -= dt
+		crouching = true
+		sprinting = false
+		if not crouch_held or hv.length() < CROUCH + 0.3 or downed:
+			_slide_t = 0.0
+		elif grounded:
+			# friction, and a little steering
+			var along := hv.normalized()
+			hv = hv.move_toward(Vector3.ZERO, SLIDE_FRICTION * dt)
+			hv = hv.slerp(wish.normalized() * hv.length(), clampf(dt * 1.2, 0.0, 1.0)) if wish.length() > 0.1 and wish.dot(along) > 0.0 else hv
+	elif grounded and _knock_t <= 0.0:
+		hv = hv.lerp(wish * speed, clampf(GROUND_ACCEL * dt, 0.0, 1.0))
+	elif grounded:
+		hv = hv.move_toward(wish * speed, 6.0 * dt)      # skidding after a shove
+	elif wish.length() > 0.05:
+		# air: steer toward the wish without bleeding the jump's speed
+		var target := wish * maxf(speed, Vector2(hv.x, hv.z).length())
+		hv = hv.move_toward(target, AIR_ACCEL * dt)
 	velocity.x = hv.x
 	velocity.z = hv.z
-	if is_on_floor():
+	if grounded:
 		if not menu and not downed and Input.is_action_just_pressed("jump"):
 			velocity.y = JUMP
+			if _slide_t > 0.0:
+				_slide_t = 0.0      # a slide-jump keeps the slide's speed
 	else:
 		velocity.y -= GRAVITY * dt
 	move_and_slide()
+	# hard landings sink the view and spring back
+	if is_on_floor() and not _was_grounded and _fall_speed < -3.0:
+		_land_vel -= clampf(-_fall_speed * 0.09, 0.0, 1.6)
+	_land_vel += (-_land_dip * 120.0 - _land_vel * 14.0) * dt
+	_land_dip += _land_vel * dt
 
-	var eye := EYE_DOWN if downed else (EYE_CROUCH if crouching else EYE)
-	head.position.y = lerpf(head.position.y, eye, clampf(dt * 10.0, 0.0, 1.0))
+	var eye := EYE_DOWN if downed else (EYE_CROUCH - (0.15 if _slide_t > 0.0 else 0.0) if crouching else EYE)
+	head.position.y = lerpf(head.position.y - _land_dip_prev, eye, clampf(dt * 10.0, 0.0, 1.0)) + _land_dip
+	_land_dip_prev = _land_dip
 	_footsteps(dt, hv.length())
 	_weapons_tick(dt, menu)
 	_hand_tick(dt)
@@ -507,6 +560,8 @@ func _camera_tick(dt: float) -> void:
 	var target_fov := base_fov * lerpf(1.0, float(def.get("ads_fov", 0.85)), ease(ads_k, -2.0))
 	if sprinting:
 		target_fov += 6.0
+	elif _slide_t > 0.0:
+		target_fov += 9.0
 	camera.fov = lerpf(camera.fov, target_fov, clampf(dt * 14.0, 0.0, 1.0))
 	if viewmodel == null:
 		return
@@ -549,7 +604,8 @@ func _camera_tick(dt: float) -> void:
 	_shake = move_toward(_shake, 0.0, dt * 2.2)
 	camera.h_offset = randf_range(-1.0, 1.0) * _shake * 0.05
 	camera.v_offset = randf_range(-1.0, 1.0) * _shake * 0.05
-	camera.rotation.z = randf_range(-1.0, 1.0) * _shake * 0.025
+	_slide_roll = lerpf(_slide_roll, 0.07 if _slide_t > 0.0 else 0.0, clampf(dt * 8.0, 0.0, 1.0))
+	camera.rotation.z = randf_range(-1.0, 1.0) * _shake * 0.025 + _slide_roll
 	var sway_k := lerpf(1.0, 0.15, ads_k)    # steady while aiming, so the sight stays put
 	var rot := Vector3(_kick * 0.12 + (k_reload_tilt() if reload_t >= 0.0 else 0.0) - hand_k * 0.35,
 		_sway.x * 0.05 * sway_k - hand_k * 0.15, -_sway.x * 0.08 * sway_k + hand_k * 0.25)
@@ -662,8 +718,9 @@ func _shoot(def: Dictionary, w: Dictionary) -> void:
 				if hits.has(key):
 					hits[key][0] += total
 					hits[key][1] = hits[key][1] or head_hit
+					hits[key][2] += dir * total
 				else:
-					hits[key] = [total, head_hit]
+					hits[key] = [total, head_hit, dir * total]
 				col.local_hit(r.position, head_hit)
 				exclude.append(col.get_rid())
 				from = r.position
@@ -680,7 +737,7 @@ func _shoot(def: Dictionary, w: Dictionary) -> void:
 		var report := []
 		var any_head := false
 		for k in hits:
-			report.append([k, hits[k][0], hits[k][1], false])
+			report.append([k, hits[k][0], hits[k][1], false, hits[k][2] * PUSH_PER_DAMAGE])
 			any_head = any_head or hits[k][1]
 		game.report_hits(report)
 		game.hud.hitmarker(any_head)
@@ -713,6 +770,12 @@ func _eject_casing(def: Dictionary) -> void:
 		return
 	_casing_ms = now
 	get_tree().create_timer(_rng.randf_range(0.28, 0.45)).timeout.connect(func(): Sfx.play_minor("casing", -17.0, 0.12))
+	# a real case, flicked out to the right
+	var b := camera.global_basis
+	var port := camera.global_position + b * Vector3(0.14, -0.1, -0.35)
+	var v := b * Vector3(_rng.randf_range(2.2, 3.2), _rng.randf_range(1.6, 2.4), _rng.randf_range(-0.3, 0.4)) + velocity
+	var big: bool = def.get("scope", false) or def.id in ["warden", "maul"]
+	game.fx_root.debris.spawn("brass", port, v, Vector3(0.011, 0.011, 0.034 if big else 0.022), 4.0)
 
 
 ## The Cinderbolt arcs from its impact to nearby enemies.
@@ -800,7 +863,7 @@ func _melee_strike() -> void:
 	if best:
 		Sfx.play("melee_hit", -2.0)
 		best.local_hit(best.global_position + Vector3.UP * 1.2, false)
-		game.report_hits([[best.enemy_id, 160.0, false, true]])
+		game.report_hits([[best.enemy_id, 160.0, false, true, fwd * 6.0 + Vector3.UP]])
 		game.hud.hitmarker(false)
 
 
@@ -874,6 +937,10 @@ func _arc(from: Vector3, to: Vector3) -> void:
 
 func _impact(pos: Vector3, normal: Vector3, big := false) -> void:
 	game.fx_root.impact(pos, normal, big)
+	var chip := "stone"
+	if absf(normal.y) >= 0.6 and game.arena.surface_at(pos) == "wood":
+		chip = "wood"
+	game.fx_root.debris.chips(chip, pos, normal, 3 if big else 2)
 	# the sound of what it hit: masonry walls, or whatever the floor is
 	var now := Time.get_ticks_msec()
 	if now - _impact_ms > 70:
@@ -1156,6 +1223,15 @@ func hurt(amount: float, from: Vector3) -> void:
 	_kick = 0.8
 	if hp <= 0.0:
 		_go_down()
+
+
+## Shoved by a blast: velocity in m/s. The feet stop fighting it for a moment.
+func knock(impulse: Vector3) -> void:
+	if not is_local() or dead:
+		return
+	velocity += impulse
+	_knock_t = 0.3
+	_slide_t = 0.0
 
 
 func _go_down() -> void:

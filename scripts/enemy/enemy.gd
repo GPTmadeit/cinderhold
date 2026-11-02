@@ -8,6 +8,7 @@ extends CharacterBody3D
 const Prof := preload("res://scripts/core/prof.gd")
 const M := preload("res://scripts/voxel/models.gd")
 const A := preload("res://scripts/game/rig_anim.gd")
+const Ragdoll := preload("res://scripts/game/ragdoll.gd")
 
 ## speed: metres per second in round 1 (the match scales it up a little
 ## every round, see game.gd); max_speed: never faster than this, so a
@@ -48,6 +49,8 @@ var _snaps: Array = []        # [time, pos, yaw, anim, speed]
 var _head_shape: CollisionShape3D
 var _head_centre := Vector3.ZERO   # middle of the head, from its neck pivot
 var _rng := RandomNumberGenerator.new()
+var _ragdoll: Array[RigidBody3D] = []
+var _knock := Vector3.ZERO     # host: shove from hits and blasts, m/s, fading
 
 
 ## `speed_mult` is the round's speed multiplier (1.0 in round 1).
@@ -243,8 +246,11 @@ func _act(dt: float) -> void:
 	_cooldown -= dt
 
 	var hv := Vector3(velocity.x, 0, velocity.z).lerp(desired, clampf(dt * 8.0, 0.0, 1.0))
-	velocity = hv
+	# a shove (shotgun blast, grenade) rides on top of the walk and fades
+	velocity = hv + _knock
 	_grid_move(dt)
+	velocity -= _knock
+	_knock *= exp(-dt * 6.0)
 	move_speed = Vector2(velocity.x, velocity.z).length()
 	if move_speed > 0.2 or (_target and anim == Anim.ATTACK):
 		var face: Vector3 = (_target.global_position - global_position) if (_target and (anim == Anim.ATTACK or global_position.distance_to(_target.global_position) < 3.0)) else velocity
@@ -305,6 +311,14 @@ func _separation() -> Vector3:
 		if l < r and l > 0.001:
 			push += d / l * (r - l) / r
 	return push
+
+
+## Host: a hit or blast shoved this enemy (`impulse` in m/s for a husk).
+func knock(impulse: Vector3) -> void:
+	impulse.y = 0.0
+	var k := 0.35 if kind == "brute" else 1.0
+	_knock = (_knock + impulse * k).limit_length(7.0)
+	_flinch = maxf(_flinch, clampf(impulse.length() * 0.25, 0.0, 1.0))
 
 
 func on_hurt(_attacker: int) -> void:
@@ -424,7 +438,7 @@ func _burst(point: Vector3, big: bool) -> void:
 	game.fx_root.burst(point, big)
 
 
-func die(headshot: bool) -> void:
+func die(headshot: bool, push := Vector3.ZERO) -> void:
 	if dying:
 		return
 	dying = true
@@ -434,22 +448,34 @@ func die(headshot: bool) -> void:
 			c.set_deferred("disabled", true)
 	Sfx.play_at("husk_die", global_position + Vector3.UP, -1.0)
 	if headshot:
-		_burst(global_position + Vector3.UP * (_stats.height - 0.2), true)
+		var hp_pos: Vector3 = global_position + Vector3.UP * (_stats.height - 0.2)
+		_burst(hp_pos, true)
 		_parts.head.visible = false
+		var debris = game.fx_root.debris
+		if debris:
+			debris.chips("flesh", hp_pos, (push.normalized() + Vector3.UP * 0.6).normalized(), 5, 3.0, 1.4)
+			debris.chips("ember", hp_pos, Vector3.UP, 2, 2.0, 0.7)
+	# hand the rig to the physics engine and let the blow carry it
+	var v := velocity if multiplayer.is_server() else _net_velocity()
+	if push.length() < 0.5:
+		push = global_basis.z * 1.5     # nothing to go on: topple backwards
+	_ragdoll = Ragdoll.make(self, _parts, v, push, 2.5 if kind == "brute" else 1.0)
 	var tw := create_tween()
-	var dir := -1.0 if _rng.randf() < 0.5 else 1.0
-	tw.set_parallel(true)
-	tw.tween_property(_model, "rotation:x", PI * 0.5 * dir * 0.98, 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw.tween_property(_model, "position:y", 0.15, 0.55)
-	# limbs fly up and go limp as it falls
-	tw.tween_property(_parts.arm_l, "rotation", Vector3(2.4, 0.3, -0.5), 0.4)
-	tw.tween_property(_parts.arm_r, "rotation", Vector3(2.0, -0.3, 0.5), 0.45)
-	tw.tween_property(_parts.fore_l, "rotation:x", 0.9, 0.4)
-	tw.tween_property(_parts.fore_r, "rotation:x", 0.4, 0.45)
-	tw.tween_property(_parts.shin_l, "rotation:x", -1.1, 0.5)
-	tw.tween_property(_parts.head, "rotation:x", 0.5 * dir, 0.4)
-	tw.chain().tween_method(_set_dissolve, 0.0, 1.0, 1.2).set_delay(0.5)
-	tw.chain().tween_callback(queue_free)
+	tw.tween_interval(Ragdoll.SETTLE + 0.4)
+	tw.tween_method(_set_dissolve, 0.0, 1.0, 1.2)
+	tw.tween_callback(func():
+		Ragdoll.forget(_ragdoll)
+		queue_free())
+
+
+## Velocity estimated from the last two snapshots (remote copies).
+func _net_velocity() -> Vector3:
+	if _snaps.size() < 2:
+		return Vector3.ZERO
+	var a: Array = _snaps[_snaps.size() - 2]
+	var b: Array = _snaps[_snaps.size() - 1]
+	var dt: float = b[0] - a[0]
+	return (b[1] - a[1]) / dt if dt > 0.001 else Vector3.ZERO
 
 
 func _set_dissolve(v: float) -> void:

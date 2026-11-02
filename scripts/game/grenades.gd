@@ -82,6 +82,14 @@ func _explode(pos: Vector3, owner_peer: int) -> void:
 		var d: float = me.global_position.distance_to(pos)
 		if d < 14.0:
 			me.shake(clampf(1.0 - d / 14.0, 0.0, 1.0))
+		# the blast shoves survivors too (it never hurts them): a grenade jump
+		var body: Vector3 = me.global_position + Vector3.UP * 0.9
+		var dd := body.distance_to(pos)
+		if dd < RADIUS * 0.8 and get_world_3d().direct_space_state.intersect_ray(
+				PhysicsRayQueryParameters3D.create(pos + Vector3.UP * 0.2, body, 1)).is_empty():
+			var away := (body - pos).normalized()
+			away.y = maxf(away.y, 0.35)
+			me.knock(away.normalized() * lerpf(9.0, 2.0, dd / (RADIUS * 0.8)))
 	if multiplayer.is_server():
 		game.grenade_blast(pos, owner_peer, RADIUS)
 

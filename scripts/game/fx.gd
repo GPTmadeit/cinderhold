@@ -9,6 +9,7 @@ extends Node3D
 ## Powerups and other scene props are plain children of this node too.
 
 const ArenaScript := preload("res://scripts/world/arena.gd")
+const DebrisScript := preload("res://scripts/game/debris.gd")
 
 const TRACER_LIFE := 0.07
 const LIGHT_LIFE := 0.35
@@ -34,9 +35,13 @@ var _lights: Array[OmniLight3D] = []
 var _light_t := PackedFloat32Array()
 var _light_e := PackedFloat32Array()   # each flash's starting energy
 var _next_light := 0
+var debris: DebrisScript      # physical chips, cases and gibs
 
 
 func _ready() -> void:
+	debris = DebrisScript.new()
+	debris.name = "Debris"
+	add_child(debris)
 	for pool in POOLS:
 		_pools[pool] = _make_pool(pool)
 		_next[pool] = 0
@@ -162,6 +167,8 @@ func blast(pos: Vector3) -> void:
 	_emit("blast", pos, Vector3.UP)
 	_emit("burst_big", pos + Vector3.UP * 0.3, Vector3.UP)
 	_flash(pos + Vector3.UP * 0.6, 12.0, 11.0)
+	debris.chips("stone", pos, Vector3.UP, 7, 6.0, 1.3)
+	debris.chips("ember", pos, Vector3.UP, 4, 5.0, 0.8)
 
 
 func _flash(pos: Vector3, energy: float, range_m: float) -> void:

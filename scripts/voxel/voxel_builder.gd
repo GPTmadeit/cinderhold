@@ -10,6 +10,13 @@ extends RefCounted
 
 const SHADER := preload("res://shaders/voxel.gdshader")
 const SHADER_STATIC := preload("res://shaders/voxel_static.gdshader")
+const Smooth := preload("res://scripts/voxel/smooth_mesher.gd")
+const NO_CUT := -1073741824
+## Round models by relaxing the voxel surface (smooth_mesher.build_relaxed)
+## rather than by blurring it; `smooth` picks the number of passes.
+const RELAX := true
+const RELAX_PASSES := [0, 10, 14, 18, 22, 26]
+const RELAX_PASSES_COARSE := 6
 
 ## [normal, u, v] with u × v = normal, so quads wind consistently.
 const FACES := [
@@ -32,6 +39,14 @@ var skip_bottom := false
 var dynamic := false
 ## Fine voxels per authoring voxel along each axis.
 var res := 1
+## Rounding radius in lattice cells (0 = crisp cubes); see smooth_mesher.gd.
+var smooth := 1
+## Lattice cell size in fine voxels for rounding (0 = one authoring voxel).
+var smooth_step := 0
+## Where split_below() cut this part (fine y; NO_CUT = none): rounding
+## treats the cut as continuing, so elbows and knees meet flush.
+var cut_below := NO_CUT
+var cut_above := NO_CUT
 
 
 func _init(resolution := 1) -> void:
@@ -180,6 +195,11 @@ func split_below(fine_y: int) -> RefCounted:
 	var other = get_script().new(res)
 	other.dynamic = dynamic
 	other.skip_bottom = skip_bottom
+	other.smooth = smooth
+	other.smooth_step = smooth_step
+	other.cut_above = fine_y
+	other.cut_below = cut_below
+	cut_below = fine_y
 	for p in vox.keys():
 		if p.y < fine_y:
 			other.vox[p] = vox[p]
@@ -220,6 +240,14 @@ static func material(glowing: bool, strength := 2.5, scale := 0.0625, pivot := V
 ## Build the mesh. `scale` is the edge length of one authoring (coarse) voxel
 ## in metres and `pivot` is the coarse-grid point that becomes the mesh origin.
 func build(scale: float, pivot := Vector3.ZERO, glow_strength := 2.5) -> ArrayMesh:
+	if smooth > 0 and RELAX:
+		# characters and guns round on the fine grid; static props on the authoring grid
+		var step := smooth_step if smooth_step > 0 else (1 if dynamic else res)
+		return Smooth.build_relaxed(vox, glow, RELAX_PASSES[mini(smooth, 5)] if step == 1 else RELAX_PASSES_COARSE, scale / res,
+			pivot * res, glow_strength, dynamic, cut_below, cut_above, step)
+	if smooth > 0:
+		return Smooth.build(vox, glow, smooth_step if smooth_step > 0 else res, smooth, scale / res, pivot * res, glow_strength, dynamic,
+			cut_below, cut_above)
 	var arrays := mesh_arrays(scale / res, pivot * res)
 	return arrays_to_mesh(arrays, scale / res, pivot * res, glow_strength, dynamic)
 

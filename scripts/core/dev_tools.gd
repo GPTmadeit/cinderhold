@@ -238,6 +238,29 @@ func _dev_acts() -> void:
 						game.grenade_blast(e.global_position + Vector3(1.0, 0.15, 0.0), p.peer_id, 4.6)
 						print("BLASTTEST enemy hp %.0f -> %.0f dying=%s" % [hp_before, e.hp, e.dying or not game.enemies.has(e.enemy_id)])
 						break
+			"killall":
+				# every live enemy dies to a shove from the player: ragdolls
+				var hits := []
+				for e in game.enemies.values():
+					if not e.dying:
+						var away: Vector3 = (e.global_position - p.global_position).normalized()
+						hits.append([e.enemy_id, 99999.0, false, false, away * 7.0 + Vector3.UP * 2.0])
+				game._apply_hits(p.peer_id, hits)
+				print("KILLALL %d" % hits.size())
+			"slide":
+				# sprint, then crouch into a slide; report the distance covered
+				Input.action_press("move_forward")
+				Input.action_press("sprint")
+				var start: Vector3 = p.global_position
+				get_tree().create_timer(0.8).timeout.connect(func(): Input.action_press("crouch"))
+				for t in [0.3, 0.75, 0.85, 1.2, 1.6]:
+					get_tree().create_timer(t).timeout.connect(func():
+						print("SLIDE t=%.2f speed %.2f slide_t %.2f floor=%s pos %s" % [t, Vector2(p.velocity.x, p.velocity.z).length(), p._slide_t, p.is_on_floor(), p.global_position.snappedf(0.1)]))
+				get_tree().create_timer(1.9).timeout.connect(func():
+					Input.action_release("crouch")
+					Input.action_release("sprint")
+					Input.action_release("move_forward")
+					print("SLIDE moved %.2f m" % p.global_position.distance_to(start)))
 			"jumpfwd":
 				# run and jump forward, then report where we ended up
 				Input.action_press("move_forward")

@@ -10,6 +10,7 @@ const EnemyScript := preload("res://scripts/enemy/enemy.gd")
 const HudScript := preload("res://scripts/ui/hud.gd")
 const FxScript := preload("res://scripts/game/fx.gd")
 const GrenadesScript := preload("res://scripts/game/grenades.gd")
+const Ragdoll := preload("res://scripts/game/ragdoll.gd")
 const W := preload("res://scripts/game/weapons.gd")
 const P := preload("res://scripts/game/perks.gd")
 const M := preload("res://scripts/voxel/models.gd")
@@ -253,6 +254,7 @@ func _physics_process(dt: float) -> void:
 func _physics_process_body(dt: float) -> void:
 	if not loaded:
 		return
+	Ragdoll.settle()
 	_tick_timers(dt)
 	if not multiplayer.is_server():
 		return
@@ -509,32 +511,35 @@ func _apply_hits(peer: int, hits: Array) -> void:
 			head = true
 		e.hp -= dmg
 		e.on_hurt(peer)
+		var push: Vector3 = h[4] if h.size() > 4 and h[4] is Vector3 else Vector3.ZERO
+		push = push.limit_length(12.0)
 		if e.hp <= 0.0:
 			var reward := 130 if melee else (100 if head else 60)
 			add_points(peer, reward)
 			stats[peer].kills += 1
 			if head:
 				stats[peer].headshots += 1
-			_kill_enemy(e, head, peer)
+			_kill_enemy(e, head, peer, push)
 		else:
+			e.knock(push * 0.5)
 			add_points(peer, 10)
 
 
-func _kill_enemy(e: Node, head: bool, killer: int) -> void:
+func _kill_enemy(e: Node, head: bool, killer: int, push := Vector3.ZERO) -> void:
 	var pos: Vector3 = e.global_position
 	enemies.erase(e.enemy_id)
-	_enemy_died.rpc(e.enemy_id, head, killer)
+	_enemy_died.rpc(e.enemy_id, head, killer, push)
 	_maybe_drop(pos)
 
 
 @rpc("authority", "reliable", "call_local")
-func _enemy_died(id: int, head: bool, killer: int) -> void:
+func _enemy_died(id: int, head: bool, killer: int, push := Vector3.ZERO) -> void:
 	var e = enemies.get(id)
 	if e == null:
 		e = enemies_root.get_node_or_null("E%d" % id)
 	enemies.erase(id)
 	if e:
-		e.die(head)
+		e.die(head, push)
 	if killer == multiplayer.get_unique_id() and hud:
 		hud.kill_confirmed(head)
 
@@ -592,7 +597,10 @@ func grenade_blast(pos: Vector3, peer: int, radius: float) -> void:
 			continue
 		if not space.intersect_ray(PhysicsRayQueryParameters3D.create(pos + Vector3.UP * 0.2, chest, 1)).is_empty():
 			continue   # behind a wall or a door
-		hits.append([e.enemy_id, full * lerpf(1.0, 0.3, d / radius), false, false])
+		var away := chest - pos
+		away.y = maxf(away.y, 0.0)
+		hits.append([e.enemy_id, full * lerpf(1.0, 0.3, d / radius), false, false,
+			(away.normalized() + Vector3.UP * 0.8) * lerpf(11.0, 4.0, d / radius)])
 	if Settings.bot_driving():
 		print("GRENADE blast at %s hit %d enemies" % [pos.snappedf(0.1), hits.size()])
 	if not hits.is_empty():

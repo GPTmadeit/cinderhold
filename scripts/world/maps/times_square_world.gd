@@ -617,6 +617,8 @@ func lamp_mesh() -> Mesh:
 			b.put(Vector3i(-x, 58 + mini(x, 3) / 2, 0), iron, 0.04)
 		b.box(Vector3i(-11, 57, -1), Vector3i(-8, 58, 1), Color("3a3e40"), 0.04)
 		b.box(Vector3i(-10, 56, -1), Vector3i(-9, 56, 0), Color("ffd08a"), 0.0, true)
+		b.smooth = 1     # a round pole
+		b.smooth_step = 1
 		return b.build(0.0625, Vector3(0.5, 0, 0.5), 3.5))
 
 
@@ -653,6 +655,7 @@ func cab_mesh() -> Mesh:
 		b.paint(Vector3i(-7, 9, -18), Vector3i(7, 9, -4), Color("5a3a22"), 0.15)  # scorched hood
 		b.put(Vector3i(-3, 10, -14), Color("ff7a1a"), 0.0, true)
 		b.put(Vector3i(2, 10, -16), Color("ffb040"), 0.0, true)
+		b.smooth = 1
 		return b.build(0.0625, Vector3(0.5, 0, 0.5), 3.0))
 
 
@@ -711,6 +714,7 @@ func rubble_mesh(seed_v: int) -> Mesh:
 			b.put(Vector3i(1, 3, 2), Color("ff7a1a"), 0.0, true)
 			b.put(Vector3i(-2, 5, -1), Color("ffb040"), 0.0, true)
 		b.box(Vector3i(-9, 0, -9), Vector3i(9, 0, 9), Color("3a3634"), 0.1)     # spilled grit
+		b.smooth = 1
 		return b.build(0.125, Vector3(0.5, 0, 0.5)))
 
 

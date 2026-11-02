@@ -57,6 +57,8 @@ func _ready() -> void:
 	add_child(tm)
 	var cam := Camera3D.new()
 	cam.position = Vector3(1.2, 2.4, -9.0)
+	if OS.get_environment("CINDER_CLOSEUP") != "":
+		cam.position = Vector3(2.6, 1.5, -3.2)
 	cam.fov = 58
 	add_child(cam)
 	cam.look_at(Vector3(1.2, 1.9, 0))
