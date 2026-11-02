@@ -50,6 +50,11 @@ var _head_shape: CollisionShape3D
 var _head_centre := Vector3.ZERO   # middle of the head, from its neck pivot
 var _rng := RandomNumberGenerator.new()
 var _ragdoll: Array[RigidBody3D] = []
+var _attack_n := 0
+var _was_attacking := false
+var _prev_yaw := 0.0
+var _turn := 0.0
+var _twitch_t := 2.0
 var _knock := Vector3.ZERO     # host: shove from hits and blasts, m/s, fading
 
 
@@ -313,11 +318,28 @@ func _separation() -> Vector3:
 	return push
 
 
+## Jerk the body away from a hit at world `point` (the joints' springs do
+## the rest: the torso snaps back and recovers, the head whips).
+func react(point: Vector3, strength: float) -> void:
+	if dying or _parts.is_empty():
+		return
+	var local := global_transform.affine_inverse() * point
+	var heavy := 0.35 if kind == "brute" else 1.0
+	var from := Vector2(local.x, local.z).normalized()
+	# hit in front (-z) leans it back (+x); from the side rolls it away
+	var imp := Vector3(-from.y * 7.0, _rng.randf_range(-3.0, 3.0), -from.x * 6.0) * strength * heavy
+	A.kick(_parts.torso, imp)
+	A.kick(_parts.head, imp * 1.6 + Vector3(_rng.randf_range(-4, 4), _rng.randf_range(-6, 6), 0) * strength * heavy)
+	var arm: Node3D = _parts.arm_l if local.x < 0.0 else _parts.arm_r
+	A.kick(arm, Vector3(_rng.randf_range(-8, 4), 0, _rng.randf_range(-6, 6)) * strength * heavy)
+
+
 ## Host: a hit or blast shoved this enemy (`impulse` in m/s for a husk).
 func knock(impulse: Vector3) -> void:
 	impulse.y = 0.0
 	var k := 0.35 if kind == "brute" else 1.0
 	_knock = (_knock + impulse * k).limit_length(7.0)
+	react(global_position - impulse.normalized() + Vector3.UP, clampf(impulse.length() * 0.2, 0.3, 1.8))
 	_flinch = maxf(_flinch, clampf(impulse.length() * 0.25, 0.0, 1.0))
 
 
@@ -393,10 +415,24 @@ func _animate(dt: float) -> void:
 	if move_speed > 0.4 and _rise >= 1.0 and floori(_phase / PI) != floori(before / PI):
 		_footstep(brute)
 	_flinch = maxf(_flinch - dt * 3.5, 0.0)
+	# a new swing picks the next attack style
+	if _attack_t >= 0.0 and not _was_attacking:
+		_attack_n += 1
+	_was_attacking = _attack_t >= 0.0
+	var yaw_rate := wrapf(rotation.y - _prev_yaw, -PI, PI) / maxf(dt, 0.001)
+	_prev_yaw = rotation.y
+	_turn = lerpf(_turn, yaw_rate, clampf(dt * 6.0, 0.0, 1.0))
+	# the dead twitch: now and then a joint jerks on its own
+	_twitch_t -= dt
+	if _twitch_t <= 0.0 and kind != "brute":
+		_twitch_t = _rng.randf_range(1.5, 5.0)
+		var part: Node3D = _parts[["head", "arm_l", "arm_r", "fore_l", "fore_r", "torso"][_rng.randi() % 6]]
+		A.kick(part, Vector3(_rng.randf_range(-6, 6), _rng.randf_range(-5, 5), _rng.randf_range(-6, 6)))
 	A.enemy_pose(_parts, _model, kind, _stats.height, {
 		"phase": _phase, "t": Time.get_ticks_msec() * 0.001 + float(enemy_id) * 1.7, "speed": move_speed,
 		"rise": _rise, "attack": clampf(_attack_t / _stats.windup, 0.0, 1.0) if _attack_t >= 0.0 else -1.0,
-		"flinch": _flinch}, dt)
+		"flinch": _flinch, "style": (enemy_id + _attack_n) % 3, "seed": float(enemy_id % 97) * 0.731,
+		"turn": _turn}, dt)
 	var head: Transform3D = global_transform.affine_inverse() * (_parts.head as Node3D).global_transform
 	_head_shape.transform = Transform3D(head.basis.orthonormalized(), head * _head_centre)
 
@@ -430,6 +466,7 @@ func local_hit(point: Vector3, head: bool) -> void:
 	_flash = 1.0
 	_flinch = 1.0
 	_flash_sent = 1.0
+	react(point, 1.0 if not head else 1.6)
 	Sfx.play_at("flesh", point, -2.0)
 	_burst(point, head)
 

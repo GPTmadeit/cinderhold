@@ -34,23 +34,24 @@ func _ready() -> void:
 		{"label": "aim up", "speed": 0.0, "pitch": 0.5, "aim": true}, {"label": "crouch", "speed": 2.0, "crouch": true},
 		{"label": "reload", "speed": 0.0, "reload": true}, {"label": "melee", "speed": 0.0, "melee": 0.45},
 		{"label": "throw", "speed": 0.0, "throw": 0.55}, {"label": "jump", "speed": 3.0, "air": true},
-		{"label": "downed", "speed": 0.0, "down": true},
+		{"label": "downed", "speed": 0.0, "down": true}, {"label": "slide", "speed": 7.0, "slide": true},
 	]
 	var x := -9.0
 	for st in survivor_states:
 		_add("survivor", M.survivor(1), Vector3(x, 0, 0), st)
 		x += 2.0
 	var enemy_states := [
-		["husk", {"label": "shamble", "speed": 1.6}], ["husk", {"label": "attack wind-up", "speed": 0.0, "attack": 0.6}],
-		["husk", {"label": "attack strike", "speed": 0.0, "attack": 0.95}], ["husk", {"label": "rise", "speed": 0.0, "rise": 0.7}],
+		["husk", {"label": "shamble", "speed": 1.6}], ["husk", {"label": "slam", "speed": 0.0, "loop": 0}],
+		["husk", {"label": "swipe", "speed": 0.0, "loop": 1}], ["husk", {"label": "lunge", "speed": 0.0, "loop": 2}],
+		["husk", {"label": "hit", "speed": 0.0, "hits": true}], ["husk", {"label": "rise", "speed": 0.0, "rise": 0.7}],
 		["runner", {"label": "run", "speed": 5.0}], ["brute", {"label": "stomp", "speed": 2.2}],
-		["brute", {"label": "slam", "speed": 0.0, "attack": 0.92}],
+		["brute", {"label": "slam", "speed": 0.0, "loop": 0}],
 	]
-	x = -7.0
+	x = -9.0
 	for e in enemy_states:
 		var parts: Dictionary = M.brute() if e[0] == "brute" else M.husk(e[0], 1)
 		_add(e[0], parts, Vector3(x, 0, 4.5), e[1])
-		x += 2.3 if e[0] != "brute" else 2.8
+		x += 2.0 if e[0] != "brute" else 2.8
 	# `-- --row 1` frames the enemies, otherwise the survivors
 	var row := 1 if "--row" in OS.get_cmdline_user_args() else 0
 	var cam := Camera3D.new()
@@ -100,8 +101,14 @@ func _process(dt: float) -> void:
 			A.survivor_pose(r[1], r[2], {"phase": _t * (1.2 + spd * 2.9), "speed": spd, "pitch": st.get("pitch", 0.0),
 				"sprint": st.get("sprint", false), "crouch": st.get("crouch", false), "down": st.get("down", false),
 				"aim": st.get("aim", false), "reload": st.get("reload", false), "air": st.get("air", false),
-				"kick": 0.0, "melee": st.get("melee", 0.0), "throw": st.get("throw", 0.0)}, dt)
+				"kick": 0.0, "melee": st.get("melee", 0.0), "throw": st.get("throw", 0.0), "slide": st.get("slide", false)}, dt)
 		else:
 			var h := 2.7 if r[0] == "brute" else 1.85
+			var attack: float = st.get("attack", -1.0)
+			if st.has("loop"):
+				attack = fmod(_t, 1.6) / 1.1 if fmod(_t, 1.6) < 1.1 else -1.0   # swing, then a beat
+			if st.get("hits", false) and floori(_t / 1.2) != floori((_t - dt) / 1.2):
+				A.kick(r[1].torso, Vector3(7, 2, -3))
+				A.kick(r[1].head, Vector3(10, 5, 4))
 			A.enemy_pose(r[1], r[2], r[0], h, {"phase": _t * (0.8 + spd * 2.9), "t": _t, "speed": spd,
-				"rise": st.get("rise", 1.0), "attack": st.get("attack", -1.0), "flinch": 0.0}, dt)
+				"rise": st.get("rise", 1.0), "attack": attack, "flinch": 0.0, "style": st.get("loop", 0), "seed": 1.3}, dt)

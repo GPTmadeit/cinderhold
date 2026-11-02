@@ -46,6 +46,10 @@ func _ready() -> void:
 	if i != -1 and i + 2 < args.size():
 		shot_path = args[i + 1]
 		delay = float(args[i + 2])
+	i = args.find("--burst")
+	if i != -1 and i + 2 < args.size():
+		_burst_n = int(args[i + 1])
+		_burst_step = float(args[i + 2])
 	i = args.find("--host")
 	if i != -1:
 		_host_wants = int(args[i + 1]) if i + 1 < args.size() else 2
@@ -312,6 +316,12 @@ func _process(dt: float) -> void:
 			_gpu_ms += RenderingServer.viewport_get_measured_render_time_gpu(vp)
 			_cpu_ms += RenderingServer.viewport_get_measured_render_time_cpu(vp) + RenderingServer.get_frame_setup_time_cpu()
 			_samples += 1
+	# --burst N STEP: N frames STEP seconds apart, ending at the shot (motion review)
+	if shot_path != "" and _burst_n > 0 and _t >= delay - _burst_n * _burst_step:
+		var k := int((_t - (delay - _burst_n * _burst_step)) / _burst_step)
+		if k > _burst_last and k < _burst_n:
+			_burst_last = k
+			get_viewport().get_texture().get_image().save_png(shot_path.get_basename() + "_%02d.png" % k)
 	if shot_path != "" and _t >= delay:
 		get_viewport().get_texture().get_image().save_png(shot_path)
 		print("shot saved ", shot_path)
@@ -348,6 +358,9 @@ func _process(dt: float) -> void:
 # and logs what happens, then quits.
 # =========================================================================
 
+var _burst_n := 0
+var _burst_step := 0.15
+var _burst_last := -1
 var _bot_secs := 0.0
 var _bot_t := 0.0
 var _bot_log_t := 0.0

@@ -77,6 +77,7 @@ func build(a: Node3D, m: RefCounted) -> void:
 			var mi := MeshInstance3D.new()
 			mi.mesh = mesh
 			arena.add_child(mi)
+	_build_signs()
 	_build_collision()
 	arena._add_box(Vector3(D.W / 2.0, -0.5, D.H / 2.0), Vector3(D.W + 2, 1.0, D.H + 2))   # the street
 	_build_ground()
@@ -98,15 +99,18 @@ func build(a: Node3D, m: RefCounted) -> void:
 
 func _build_meshes() -> void:
 	var t := CityTerrain.new()
+	var rounded: bool = arena.ROUNDED_TERRAIN
+	t.letters = not rounded
 	await arena._run_tasks(func(_i): t.setup_city(street, D.W * D.FINE, D.H * D.FINE, styles), 1, 0.05, 0.15, "Paving the streets…")
 	var n: int = t.chunk_count()
 	var results := []
 	results.resize(n)
-	await arena._run_tasks(func(i): results[i] = t.mesh_chunk(i), n, 0.15, 0.5, "Raising the storefronts…")
+	await arena._run_tasks(func(i): results[i] = t.smooth_chunk(i) if rounded else t.mesh_chunk(i), n, 0.15, 0.5, "Raising the storefronts…")
 	var terrain: Array[ArrayMesh] = []
 	for i in n:
-		terrain.append(VB.arrays_to_mesh(results[i], 1.0 / t.vpc, Vector3.ZERO, 3.0, false))
+		terrain.append(arena._terrain_mesh(results[i]) if rounded else VB.arrays_to_mesh(results[i], 1.0 / t.vpc, Vector3.ZERO, 3.0, false))
 	_cache.terrain = terrain
+	_cache.signs = t.signs if rounded else []
 	# facades in tiles, so the camera can skip the ones behind it
 	var tiles := 6
 	var fac := []
@@ -138,90 +142,64 @@ func _build_meshes() -> void:
 func _facade_arrays(tx: int, tz: int, tiles: int) -> Dictionary:
 	var out := {"v": PackedVector3Array(), "n": PackedVector3Array(), "c": PackedColorArray(),
 		"uv": PackedVector2Array(), "uv2": PackedVector2Array(), "i": PackedInt32Array()}
-	var sw := int((D.W + 2 * D.MARGIN) * D.SKY)
-	var sh := int((D.H + 2 * D.MARGIN) * D.SKY)
-	var c0 := tx * sw / tiles
-	var c1 := (tx + 1) * sw / tiles
-	var r0 := tz * sh / tiles
-	var r1 := (tz + 1) * sh / tiles
-	var s := 1.0 / D.SKY
-	# walls facing -z and +z: runs along x
-	for r in range(r0, r1):
-		for dir in [-1, 1]:
-			var run_start := -1
-			var run_key := ""
-			for c in range(c0, c1 + 1):
-				var key := ""
-				var b := -1
-				var y0 := 0.0
-				var y1 := 0.0
-				if c < c1:
-					b = sky[r * sw + c] - 1
-					if b >= 0:
-						var nb := -1 if r + dir < 0 or r + dir >= sh else sky[(r + dir) * sw + c] - 1
-						y1 = float(D.BUILDINGS[b][1])
-						y0 = maxf(_base_h(c, r), float(D.BUILDINGS[nb][1]) if nb >= 0 else 0.0)
-						if y1 > y0 + 0.01:
-							key = "%d_%.2f" % [b, y0]
-				if key != run_key:
-					if run_key != "":
-						var rb: int = int(run_key.get_slice("_", 0))
-						var ry0 := float(run_key.get_slice("_", 1))
-						var z := -D.MARGIN + (r + (1.0 if dir > 0 else 0.0)) * s
-						var xa := -D.MARGIN + run_start * s
-						var xb := -D.MARGIN + c * s
-						_wall(out, Vector3(xa, 0, z), Vector3(xb, 0, z), ry0, float(D.BUILDINGS[rb][1]), Vector3(0, 0, dir), rb)
-					run_key = key
-					run_start = c
-	# walls facing -x and +x: runs along z
-	for c in range(c0, c1):
-		for dir in [-1, 1]:
-			var run_start := -1
-			var run_key := ""
-			for r in range(r0, r1 + 1):
-				var key := ""
-				if r < r1:
-					var b := sky[r * sw + c] - 1
-					if b >= 0:
-						var nb := -1 if c + dir < 0 or c + dir >= sw else sky[r * sw + c + dir] - 1
-						var y1 := float(D.BUILDINGS[b][1])
-						var y0 := maxf(_base_h(c, r), float(D.BUILDINGS[nb][1]) if nb >= 0 else 0.0)
-						if y1 > y0 + 0.01:
-							key = "%d_%.2f" % [b, y0]
-				if key != run_key:
-					if run_key != "":
-						var rb: int = int(run_key.get_slice("_", 0))
-						var ry0 := float(run_key.get_slice("_", 1))
-						var x := -D.MARGIN + (c + (1.0 if dir > 0 else 0.0)) * s
-						var za := -D.MARGIN + run_start * s
-						var zb := -D.MARGIN + r * s
-						_wall(out, Vector3(x, 0, za), Vector3(x, 0, zb), ry0, float(D.BUILDINGS[rb][1]), Vector3(dir, 0, 0), rb)
-					run_key = key
-					run_start = r
-	# roofs: runs along x
-	for r in range(r0, r1):
-		var run_start := -1
-		var run_b := -1
-		for c in range(c0, c1 + 1):
-			var b := sky[r * sw + c] - 1 if c < c1 else -1
-			if b != run_b:
-				if run_b >= 0:
-					var y := float(D.BUILDINGS[run_b][1])
-					var x0 := -D.MARGIN + run_start * s
-					var x1 := -D.MARGIN + c * s
-					var z0 := -D.MARGIN + r * s
-					_roof(out, x0, x1, z0, z0 + s, y, run_b)
-				run_b = b
-				run_start = c
+	var span := Vector2(D.W + 2 * D.MARGIN, D.H + 2 * D.MARGIN)
+	for bid in D.OUTLINES.size():
+		var loops: Array[PackedVector2Array] = []
+		for flat: Array in D.OUTLINES[bid]:
+			var poly := PackedVector2Array()
+			for k in range(0, flat.size(), 2):
+				poly.append(Vector2(flat[k], flat[k + 1]))
+			loops.append(poly)
+		if loops.is_empty():
+			continue
+		var first: PackedVector2Array = loops[0]
+		var mid := Vector2.ZERO
+		for p in first:
+			mid += p
+		mid /= first.size()
+		var tile := Vector2i(clampi(int((mid.x + D.MARGIN) / span.x * tiles), 0, tiles - 1),
+			clampi(int((mid.y + D.MARGIN) / span.y * tiles), 0, tiles - 1))
+		if tile != Vector2i(tx, tz):
+			continue
+		var top := float(D.BUILDINGS[bid][1])
+		for loop: PackedVector2Array in loops:
+			var n := loop.size()
+			var along := 0.0
+			for i in n:
+				var pa := loop[i]
+				var pb := loop[(i + 1) % n]
+				var d := pb - pa
+				var len := d.length()
+				if len < 0.01:
+					continue
+				var out_n := Vector2(-d.y, d.x) / len
+				# start above the shops in the play area, and above any lower
+				# neighbour this wall stands against
+				var m := (pa + pb) * 0.5
+				var y0 := STORE_H if m.x > 0.0 and m.y > 0.0 and m.x < D.W and m.y < D.H else 0.0
+				var nb_h := INF
+				for k in [0.2, 0.5, 0.8]:
+					var q: Vector2 = pa + d * k + out_n * 0.3
+					nb_h = minf(nb_h, _sky_height(q.x, q.y, bid))
+				y0 = maxf(y0, nb_h)
+				if top > y0 + 0.01:
+					_wall(out, Vector3(pa.x, 0, pa.y), Vector3(pb.x, 0, pb.y), y0, top, Vector3(out_n.x, 0, out_n.y), bid, along, along + len)
+				along += len
+		_roof(out, first, top, bid)
 	return out
 
 
-## Facades start above the storefronts inside the play area (the street
-## mesher draws those); outside it they go down to the ground.
-func _base_h(c: int, r: int) -> float:
-	var x := -D.MARGIN + (c + 0.5) / D.SKY
-	var z := -D.MARGIN + (r + 0.5) / D.SKY
-	return STORE_H if x > 0.0 and z > 0.0 and x < D.W and z < D.H else 0.0
+## The height of whatever building stands at (x, z) on the skyline raster, 0
+## for open ground (or the building `self_id` itself).
+func _sky_height(x: float, z: float, self_id: int) -> float:
+	var sw := int((D.W + 2 * D.MARGIN) * D.SKY)
+	var sh := int((D.H + 2 * D.MARGIN) * D.SKY)
+	var c := int((x + D.MARGIN) * D.SKY)
+	var r := int((z + D.MARGIN) * D.SKY)
+	if c < 0 or r < 0 or c >= sw or r >= sh:
+		return 0.0
+	var b := sky[r * sw + c] - 1
+	return float(D.BUILDINGS[b][1]) if b >= 0 and b != self_id else 0.0
 
 
 func _style_color(b: int) -> Color:
@@ -233,13 +211,11 @@ func _style_color(b: int) -> Color:
 	return Color(c.r, c.g, c.b, float(e[1]) / 8.0)
 
 
-func _wall(out: Dictionary, a: Vector3, b: Vector3, y0: float, y1: float, normal: Vector3, bid: int) -> void:
+func _wall(out: Dictionary, a: Vector3, b: Vector3, y0: float, y1: float, normal: Vector3, bid: int, along_a: float, along_b: float) -> void:
 	var start: int = out.v.size()
 	var col := _style_color(bid)
 	var lin := Color(col.r, col.g, col.b).srgb_to_linear()
 	lin.a = col.a
-	var along_a := a.x if normal.z != 0.0 else a.z
-	var along_b := b.x if normal.z != 0.0 else b.z
 	var seed := float(absi(hash(bid)) % 997) / 997.0
 	var corners := [Vector3(a.x, y0, a.z), Vector3(b.x, y0, b.z), Vector3(b.x, y1, b.z), Vector3(a.x, y1, a.z)]
 	var uvs := [Vector2(along_a, y0), Vector2(along_b, y0), Vector2(along_b, y1), Vector2(along_a, y1)]
@@ -249,26 +225,67 @@ func _wall(out: Dictionary, a: Vector3, b: Vector3, y0: float, y1: float, normal
 		out.c.append(lin)
 		out.uv.append(uvs[k])
 		out.uv2.append(Vector2(y1, seed))
-	# wind so the face points along `normal`
-	var flip := (normal.z > 0.0) or (normal.x < 0.0)
-	if flip:
-		out.i.append_array([start, start + 1, start + 2, start, start + 2, start + 3])
+	_tri(out, start, start + 1, start + 2, normal)
+	_tri(out, start, start + 2, start + 3, normal)
+
+
+## Append triangle (i, j, k) wound so it faces along `normal`.
+static func _tri(out: Dictionary, i: int, j: int, k: int, normal: Vector3) -> void:
+	var n: Vector3 = (out.v[j] - out.v[i]).cross(out.v[k] - out.v[i])
+	if n.dot(normal) < 0.0:
+		out.i.append_array([i, j, k])
 	else:
-		out.i.append_array([start, start + 2, start + 1, start, start + 3, start + 2])
+		out.i.append_array([i, k, j])
 
 
-func _roof(out: Dictionary, x0: float, x1: float, z0: float, z1: float, y: float, bid: int) -> void:
+func _roof(out: Dictionary, poly: PackedVector2Array, y: float, bid: int) -> void:
+	var tris := Geometry2D.triangulate_polygon(poly)
+	if tris.is_empty():
+		return
 	var start: int = out.v.size()
 	var lin := Color("3a3638").srgb_to_linear()
 	lin.a = 7.0 / 8.0
 	var seed := float(absi(hash(bid)) % 997) / 997.0
-	for p in [Vector3(x0, y, z0), Vector3(x1, y, z0), Vector3(x1, y, z1), Vector3(x0, y, z1)]:
-		out.v.append(p)
+	for p in poly:
+		out.v.append(Vector3(p.x, y, p.y))
 		out.n.append(Vector3.UP)
 		out.c.append(lin)
-		out.uv.append(Vector2(p.x, p.z))
+		out.uv.append(p)
 		out.uv2.append(Vector2(y, seed))
-	out.i.append_array([start, start + 1, start + 2, start, start + 2, start + 3])
+	for t in range(0, tris.size(), 3):
+		_tri(out, start + tris[t], start + tris[t + 1], start + tris[t + 2], Vector3.UP)
+
+
+## Shop signs as neon lettering over the storefronts (the rounded street
+## level is too soft for voxel letters).
+func _build_signs() -> void:
+	var font: Font = load("res://assets/fonts/Bungee-Regular.ttf")
+	for sg: Array in _cache.get("signs", []):
+		var shop: int = sg[4]
+		var v: int = sg[5] + 64
+		var hs := CityTerrain.h3(shop, v, 11)
+		if hs % 6 == 0:
+			continue                                           # no sign on this shop
+		var word: String = CityTerrain.SIGN_WORDS[(hs >> 3) % CityTerrain.SIGN_WORDS.size()]
+		var col := Color(CityTerrain.CITY_PAL[40 + (hs >> 8) % 6][0])
+		var dead := hs % 7 == 1
+		var l := Label3D.new()
+		l.text = word
+		l.font = font
+		l.font_size = 72
+		l.pixel_size = 0.0055
+		l.outline_size = 14
+		if dead:
+			l.modulate = Color(0.22, 0.2, 0.2)
+			l.outline_modulate = Color(0.05, 0.05, 0.05)
+		else:
+			l.modulate = Color(col.r * 2.6, col.g * 2.6, col.b * 2.6)       # neon: bright enough to bloom
+			l.outline_modulate = Color(col.r * 0.5, col.g * 0.5, col.b * 0.5, 0.8)
+		l.double_sided = false
+		var dir := Vector3(sg[2], 0, sg[3])
+		l.position = Vector3(sg[0], 3.06, sg[1]) + dir * 0.14
+		l.rotation.y = atan2(dir.x, dir.z)
+		arena.add_child(l)
 
 
 # =========================================================================
@@ -773,6 +790,10 @@ class CityTerrain extends "res://scripts/world/terrain.gd":
 	## per storefront column (and the one behind it): the coordinate along the
 	## wall, running left to right as seen from the street, so signs read
 	var read := PackedInt32Array()
+	## Rounded street level: signs become text (signs), not voxel letters.
+	var letters := true
+	## shop signs: [x, z (metres, middle of the panel's face), facing x, facing z, shop, building]
+	var signs: Array = []
 
 
 	func setup_city(raster: PackedInt32Array, fw: int, fh: int, building_styles: PackedInt32Array) -> void:
@@ -830,6 +851,9 @@ class CityTerrain extends "res://scripts/world/terrain.gd":
 				if gx - open_dir.x >= 0 and gx - open_dir.x < GX and gz - open_dir.y >= 0 and gz - open_dir.y < GZ:
 					read[behind] = rd
 				var bay := rd % BAY
+				if bay == BAY / 2:
+					signs.append([(gx + 0.5 + open_dir.x * 0.5) / vpc, (gz + 0.5 + open_dir.y * 0.5) / vpc,
+						open_dir.x, open_dir.y, rd / BAY, codes[i] - 64])
 				var door := (rd / BAY) % 3 == 1
 				var m := cols[i]
 				if door and bay >= 8 and bay <= 15:
@@ -847,6 +871,50 @@ class CityTerrain extends "res://scripts/world/terrain.gd":
 		for gz in GZ:
 			for gx in GX:
 				_padded[(gz + 1) * (GX + 2) + gx + 1] = cols[gz * GX + gx]
+
+
+	## Rounded meshing: the most outward solid voxel of the lattice cell
+	## decides the surface (so a recessed window shows its glass).
+	func _smooth_material(gx: int, gy: int, gz: int, fi: int) -> int:
+		var nrm: Vector3i = VB.FACES[fi][0]
+		var best := -1
+		var best_d := -100
+		for dz in 2:
+			for dx in 2:
+				var x := clampi(gx + dx, 0, GX - 1)
+				var z := clampi(gz + dz, 0, GZ - 1)
+				var m := _col(x, z)
+				for dy in 2:
+					var y := gy + dy
+					if y < Y0 or (m >> (y - Y0)) & 1 == 0:
+						continue
+					var d := dx * nrm.x + dy * nrm.y + dz * nrm.z
+					if d > best_d:
+						best_d = d
+						best = _color(x, maxi(y, -1), z, fi)
+		if best < 0:
+			best = 0
+		return _city_mat(best) + best * 64
+
+
+	## Terrain shader surface (terrain.gd M_*) for a city palette entry.
+	static func _city_mat(pal: int) -> int:
+		if pal <= 2: return 12          # asphalt
+		if pal <= 4: return 19          # crossing and lane paint
+		if pal == 5: return 15          # curb
+		if pal <= 7: return 13          # sidewalk
+		if pal <= 10: return 14         # plaza pavers
+		if pal <= 12: return 20         # manholes
+		if pal <= 32: return 16         # building walls
+		if pal == 33: return 17         # dark glass
+		if pal <= 35: return 21         # door, plywood
+		if pal <= 37: return 22         # sign panel
+		return 18                       # lit windows, sign letters
+
+
+	func surface_color(code: int) -> Color:
+		var c: Color = palette[code / 64]
+		return Color(c.r, c.g, c.b, (code % 64 + 0.5) / 32.0)
 
 
 	func _capped_bits(_gx: int, _gz: int) -> int:
@@ -917,7 +985,7 @@ class CityTerrain extends "res://scripts/world/terrain.gd":
 		var hs := h3(shop, v, 11)
 		if hs % 6 == 0:
 			return base + 1                                      # no sign here
-		if bay == 3 or bay > 20 or gy == 21 or gy == 27:
+		if bay == 3 or bay > 20 or gy == 21 or gy == 27 or not letters:
 			return 36
 		var word: String = SIGN_WORDS[(hs >> 3) % SIGN_WORDS.size()]
 		var start := 4 + (4 - word.length()) * 2

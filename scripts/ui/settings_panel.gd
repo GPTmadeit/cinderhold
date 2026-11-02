@@ -140,7 +140,9 @@ func _gameplay_tab() -> void:
 func _video_tab() -> void:
 	var v := _page("Video")
 	_row(v, "Quality preset", _options("video", "quality", Settings.QUALITY_NAMES, [0, 1, 2, 3]))
-	v.add_child(T.label("Quality changes apply to lighting and effects the next time a map loads.", 18, T.MUTED))
+	if not OS.has_feature("mobile"):
+		_row(v, "Ray-traced lighting", _options("video", "raytracing", ["Auto", "On", "Off"], ["auto", "on", "off"]))
+	v.add_child(T.label("Quality and lighting changes apply the next time a map loads. Ray-traced lighting (light bouncing off walls, reflections) is on in Auto for High and Ultra.", 18, T.MUTED))
 	if not OS.has_feature("mobile"):
 		_row(v, "Fullscreen", _check("video", "fullscreen"))
 	_row(v, "V-Sync", _check("video", "vsync"))

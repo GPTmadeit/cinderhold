@@ -222,6 +222,7 @@ func bounds() -> AABB:
 
 static func material(glowing: bool, strength := 2.5, scale := 0.0625, pivot := Vector3(0.5, 0, 0.5), dyn := false) -> ShaderMaterial:
 	var frac := Vector3(fposmod(pivot.x, 1.0), fposmod(pivot.y, 1.0), fposmod(pivot.z, 1.0))
+	Smooth.Weather.ensure_globals()
 	var key := "%s_%s_%s_%s_%s" % [glowing, strength, scale, frac, dyn]
 	_mat_lock.lock()
 	if not _materials.has(key):

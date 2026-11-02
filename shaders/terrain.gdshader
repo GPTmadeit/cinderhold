@@ -8,6 +8,7 @@ render_mode cull_back, diffuse_burley, specular_schlick_ggx;
 // Vertex colour: rgb = baked occlusion, alpha = surface id / 32 (see M_* in terrain.gd).
 
 uniform bool detail = true;          // bevels and fine noise (off on Low)
+global uniform float wetness;        // rain (scripts/world/weather.gd)
 
 varying vec3 wpos;
 varying vec3 wnrm;
@@ -226,10 +227,83 @@ void fragment() {
 	}
 
 	vec3 ao = COLOR.rgb;
+	vec3 emit = vec3(0.0);
+	float spec = 0.35;
+	if (mat >= 12) {
+		// the city's street level: COLOR is the surface's own colour (with occlusion baked in)
+		vec3 tint = COLOR.rgb;
+		ao = vec3(1.0);
+		col = tint;
+		if (mat == 12) {
+			// asphalt: aggregate, tar patches, the odd crack
+			float n = fbm(fl * 1.5);
+			col = tint * (0.8 + vnoise(fl * 38.0) * 0.3) * mix(0.8, 1.1, n);
+			float crack = smoothstep(0.012, 0.0, abs(vnoise(fl * 0.9) - 0.5)) * step(0.55, vnoise(fl * 0.3 + 7.0));
+			col *= 1.0 - crack * 0.5;
+			h = vnoise(fl * 38.0) * 0.003 - crack * 0.01;
+			rough = 0.92;
+		} else if (mat == 13 || mat == 15) {
+			// concrete slabs and curbstones
+			vec2 f = fract(fl / 1.5);
+			float d = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * 1.5;
+			float p = pillow(d, 0.006, 0.02);
+			col = tint * (0.86 + vnoise(fl * 13.0) * 0.18) * mix(0.75, 1.0, p);
+			if (mat == 15) col = tint * (0.85 + grain * 0.25);
+			h = p * 0.006;
+			rough = 0.85;
+		} else if (mat == 14) {
+			// plaza pavers: a running bond of small bricks
+			vec2 id;
+			float d;
+			courses(fl.yx, 0.0, 0.11, 0.22, id, d);
+			float p = pillow(d, 0.006, 0.02);
+			col = mix(tint * 0.55, tint * (0.8 + h21(id) * 0.35), smoothstep(0.003, 0.01, d));
+			h = p * 0.006;
+			rough = mix(0.95, 0.75, p);
+		} else if (mat == 16 || mat == 22) {
+			// walls: the building's colour, weathered, with grime low down
+			col = tint * (0.86 + fbm(wall * 3.0) * 0.22) * mix(0.75, 1.0, smoothstep(0.0, 1.2, wpos.y));
+			rough = 0.82;
+		} else if (mat == 17) {
+			// dark glass: reflective
+			col = tint * 0.6;
+			rough = 0.08;
+			spec = 0.9;
+		} else if (mat == 18) {
+			// lit windows and lamps
+			col = tint * 0.4;
+			emit = tint * (2.2 + vnoise(wall * 3.0) * 0.8);
+			rough = 0.3;
+		} else if (mat == 19) {
+			// road paint, worn
+			col = tint * (0.85 + vnoise(fl * 20.0) * 0.15) * mix(0.55, 1.0, step(0.25, vnoise(fl * 6.0)));
+			rough = 0.6;
+		} else if (mat == 20) {
+			// manhole covers: cast iron with a grip pattern
+			float g = step(0.5, fract((fl.x + fl.y) * 6.0)) * step(0.5, fract((fl.x - fl.y) * 6.0));
+			col = tint * (0.8 + g * 0.3);
+			h = g * 0.003;
+			rough = 0.55;
+			spec = 0.6;
+		} else {
+			// doors, boards
+			col = tint * (0.85 + vnoise(vec2(along * 2.0, wpos.y * 30.0)) * 0.25);
+			rough = 0.8;
+		}
+	}
+	if (wetness > 0.0 && wpos.y < 6.0) {
+		// rain: darker, slicker, standing water in the low spots of the ground
+		float puddle = up ? smoothstep(0.58, 0.72, fbm(fl * 0.6) * 0.7 + vnoise(fl * 2.3) * 0.3) * wetness : 0.0;
+		col *= mix(1.0, 0.65, wetness) * mix(1.0, 0.75, puddle);
+		rough = mix(rough, up ? 0.25 : 0.45, wetness) * (1.0 - puddle * 0.85);
+		spec = mix(spec, 0.7, wetness);
+		h *= 1.0 - puddle;
+	}
 	ALBEDO = col * ao;
 	ROUGHNESS = rough;
-	SPECULAR = 0.35;
+	SPECULAR = spec;
 	AO = ao.r;
+	EMISSION = emit;
 	if (detail) {
 		// bump from the screen-space slope of the bevel height
 		vec3 dpdx = dFdx(VERTEX);

@@ -134,6 +134,11 @@ var _land_dip := 0.0           # metres the view sinks on a hard landing, spring
 var _land_vel := 0.0
 var _land_dip_prev := 0.0
 var _slide_roll := 0.0
+var _remote_vel := Vector3.ZERO
+var _tp_yaw := 0.0
+var _tp_turn := 0.0
+var _vm_pos_v := Vector3.ZERO
+var _vm_rot_v := Vector3.ZERO
 
 
 func is_local() -> bool:
@@ -405,6 +410,10 @@ func add_look(delta: Vector2) -> void:
 	var inv := -1.0 if Settings.get_v("gameplay", "invert_y") else 1.0
 	pitch = clampf(pitch - delta.y * ads_slow * inv, deg_to_rad(-88), deg_to_rad(88))
 	_sway += Vector2(delta.x, delta.y) * 0.6
+	# turning drags the gun behind the view for a moment
+	var lag := lerpf(1.0, 0.12, ads_k)
+	_vm_rot_v += Vector3(delta.y, delta.x, delta.x * 1.3) * 2.2 * lag
+	_vm_pos_v += Vector3(delta.x * 0.08, -delta.y * 0.06, 0) * lag
 
 
 # =========================================================================
@@ -498,6 +507,8 @@ func _physics_process_body(dt: float) -> void:
 	if grounded:
 		if not menu and not downed and Input.is_action_just_pressed("jump"):
 			velocity.y = JUMP
+			_vm_pos_v.y -= 0.35
+			_vm_rot_v.x -= 1.2
 			if _slide_t > 0.0:
 				_slide_t = 0.0      # a slide-jump keeps the slide's speed
 	else:
@@ -506,6 +517,8 @@ func _physics_process_body(dt: float) -> void:
 	# hard landings sink the view and spring back
 	if is_on_floor() and not _was_grounded and _fall_speed < -3.0:
 		_land_vel -= clampf(-_fall_speed * 0.09, 0.0, 1.6)
+		_vm_pos_v.y -= clampf(-_fall_speed * 0.06, 0.0, 0.9)
+		_vm_rot_v.x -= clampf(-_fall_speed * 0.25, 0.0, 3.0)
 	_land_vel += (-_land_dip * 120.0 - _land_vel * 14.0) * dt
 	_land_dip += _land_vel * dt
 
@@ -521,7 +534,7 @@ func _physics_process_body(dt: float) -> void:
 	_send_state(dt)
 	# our own body only casts a shadow, but it may as well walk
 	var flags := int(sprinting) | int(crouching) << 1 | int(downed) << 2 | int(aiming) << 4 \
-		| int(reload_t >= 0.0) << 5 | int(not is_on_floor()) << 6
+		| int(reload_t >= 0.0) << 5 | int(not is_on_floor()) << 6 | int(_slide_t > 0.0) << 7
 	_animate_body(dt, hv.length(), flags)
 
 
@@ -569,6 +582,10 @@ func _camera_tick(dt: float) -> void:
 	_bob_t += dt * (hspd * 1.9 if is_on_floor() else 0.0)
 	var bob_amt := float(def.get("bob", 1.0)) * lerpf(1.0, 0.15, ads_k) * clampf(hspd / WALK, 0.0, 1.6)
 	var bob := Vector3(sin(_bob_t) * 0.012, -absf(cos(_bob_t)) * 0.014, 0) * bob_amt
+	# a slow breath, mostly gone while aiming
+	var breath := sin(Time.get_ticks_msec() * 0.0019) * lerpf(1.0, 0.25, ads_k)
+	bob += Vector3(breath * 0.0012, breath * 0.0035, 0)
+	var side := velocity.dot(global_basis.x)
 	_sway = _sway.lerp(Vector2.ZERO, clampf(dt * 8.0, 0.0, 1.0))
 	var hip: Vector3 = def.get("slot_pos", Vector3(0.16, -0.18, -0.34))
 	# Aiming puts this gun's own sight (red dot, front post or scope) on the
@@ -594,7 +611,12 @@ func _camera_tick(dt: float) -> void:
 		# the gun drops out of the off hand's way
 		hand_k = sin(clampf(_hand_t / (0.42 if _hand_anim == "melee" else 0.55), 0.0, 1.0) * PI)
 		pos += Vector3(0.05, -0.15, 0.06) * hand_k
-	viewmodel.position = pos
+	pos.x -= side * 0.0035 * lerpf(1.0, 0.2, ads_k)
+	# the gun rides on springs: it lags, overshoots and settles
+	var springy := 0.0 if ads_k > 0.95 else 1.0
+	var spr := _spring3(viewmodel.position, _vm_pos_v, pos, lerpf(9.0, 16.0, ads_k), 0.55 + 0.4 * (1.0 - springy), dt)
+	viewmodel.position = spr[0]
+	_vm_pos_v = spr[1]
 	# reloads: the off hand drops to the magazine and back
 	var t_rest := _arm_l_rest
 	if reload_t >= 0.0:
@@ -610,8 +632,13 @@ func _camera_tick(dt: float) -> void:
 	var rot := Vector3(_kick * 0.12 + (k_reload_tilt() if reload_t >= 0.0 else 0.0) - hand_k * 0.35,
 		_sway.x * 0.05 * sway_k - hand_k * 0.15, -_sway.x * 0.08 * sway_k + hand_k * 0.25)
 	if sprinting:
-		rot += Vector3(-0.25, 0.5, 0.15)
-	viewmodel.rotation = viewmodel.rotation.lerp(rot, clampf(dt * 14.0, 0.0, 1.0))
+		rot += Vector3(-0.25, 0.5, 0.15) + Vector3(sin(_bob_t * 0.5) * 0.06, 0, sin(_bob_t) * 0.05)
+	if _slide_t > 0.0:
+		rot += Vector3(0.1, 0.25, 0.35)
+	rot.z -= side * 0.012 * lerpf(1.0, 0.15, ads_k)
+	var sr := _spring3(viewmodel.rotation, _vm_rot_v, rot, lerpf(8.0, 14.0, ads_k), 0.5 + 0.3 * ads_k, dt)
+	viewmodel.rotation = sr[0]
+	_vm_rot_v = sr[1]
 	_kick = move_toward(_kick, 0.0, dt * 6.0)
 	var scoped: bool = def.get("scope", false) and ads_k > 0.92
 	viewmodel.visible = not scoped and not weapon().is_empty()
@@ -753,6 +780,9 @@ func _shoot(def: Dictionary, w: Dictionary) -> void:
 	pitch = clampf(pitch + deg_to_rad(rec * 0.55), deg_to_rad(-88), deg_to_rad(88))
 	yaw += deg_to_rad(_rng.randf_range(-rec, rec) * 0.18)
 	_kick = minf(_kick + rec * 0.25, 1.4)
+	# a physical kick: back into the shoulder, muzzle up, a random roll
+	_vm_pos_v += Vector3(_rng.randf_range(-0.05, 0.05), 0.03, 0.5) * rec * lerpf(1.0, 0.6, ads_k)
+	_vm_rot_v += Vector3(rec * 1.4, _rng.randf_range(-0.4, 0.4) * rec, _rng.randf_range(-1.0, 1.0) * rec) * lerpf(1.0, 0.5, ads_k)
 	bloom = minf(bloom + rec * 0.4, 6.0)
 	if def.get("pump", false):
 		get_tree().create_timer(0.32).timeout.connect(func(): Sfx.play("rack", -6.0))
@@ -1225,6 +1255,13 @@ func hurt(amount: float, from: Vector3) -> void:
 		_go_down()
 
 
+## A damped spring step for a vector: returns [position, velocity].
+static func _spring3(x: Vector3, v: Vector3, target: Vector3, hz: float, damp: float, dt: float) -> Array:
+	var w := TAU * hz
+	v = (v + (target - x) * (w * w * dt)) / (1.0 + 2.0 * damp * w * dt + w * w * dt * dt)
+	return [x + v * dt, v]
+
+
 ## Shoved by a blast: velocity in m/s. The feet stop fighting it for a moment.
 func knock(impulse: Vector3) -> void:
 	if not is_local() or dead:
@@ -1327,7 +1364,7 @@ func _send_state(dt: float) -> void:
 		return
 	_state_t = 1.0 / STATE_RATE
 	var flags := int(sprinting) | int(crouching) << 1 | int(downed) << 2 | int(dead) << 3 | int(aiming) << 4 \
-		| int(reload_t >= 0.0) << 5 | int(not is_on_floor()) << 6
+		| int(reload_t >= 0.0) << 5 | int(not is_on_floor()) << 6 | int(_slide_t > 0.0) << 7
 	var w := weapon()
 	_net_state.rpc(global_position, yaw, pitch, flags, w.get("id", ""), w.get("upgraded", false))
 
@@ -1357,7 +1394,9 @@ func _remote_update(dt: float) -> void:
 		var span: float = b[0] - a[0]
 		var k := clampf((render_t - a[0]) / span, 0.0, 1.0) if span > 0.0001 else 1.0
 		var np: Vector3 = (a[1] as Vector3).lerp(b[1], k)
-		_remote_speed = lerpf(_remote_speed, Vector2(np.x - global_position.x, np.z - global_position.z).length() / maxf(dt, 0.001), 0.2)
+		var step := Vector3(np.x - global_position.x, 0, np.z - global_position.z) / maxf(dt, 0.001)
+		_remote_speed = lerpf(_remote_speed, step.length(), 0.2)
+		_remote_vel = _remote_vel.lerp(step, 0.2)
 		global_position = np
 		rotation.y = lerp_angle(a[2], b[2], k)
 		pitch = lerpf(a[3], b[3], k)
@@ -1379,8 +1418,13 @@ func _animate_body(dt: float, spd: float, flags: int) -> void:
 	_tp_kick = maxf(_tp_kick - dt * 6.0, 0.0)
 	_tp_melee = maxf(_tp_melee - dt / 0.38, 0.0)
 	_tp_throw = maxf(_tp_throw - dt / 0.5, 0.0)
+	var vel := velocity if is_local() else _remote_vel
+	var yaw_now := rotation.y
+	_tp_turn = lerpf(_tp_turn, wrapf(yaw_now - _tp_yaw, -PI, PI) / maxf(dt, 0.001), clampf(dt * 8.0, 0.0, 1.0))
+	_tp_yaw = yaw_now
 	A.survivor_pose(_parts, _body, {
 		"phase": _tp_phase, "speed": spd, "pitch": pitch,
 		"sprint": flags & 1 != 0, "crouch": flags & 2 != 0, "down": flags & 4 != 0, "aim": flags & 16 != 0,
-		"reload": flags & 32 != 0, "air": flags & 64 != 0,
+		"reload": flags & 32 != 0, "air": flags & 64 != 0, "slide": flags & 128 != 0,
+		"side": vel.dot(global_basis.x), "turn": _tp_turn,
 		"kick": _tp_kick, "melee": _tp_melee, "throw": _tp_throw}, dt)

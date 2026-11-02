@@ -19,6 +19,7 @@ extends RefCounted
 
 const SHADER := preload("res://shaders/voxel_smooth.gdshader")
 const VB := preload("res://scripts/voxel/voxel_builder.gd")
+const Weather := preload("res://scripts/world/weather.gd")
 const SHADER_STATIC := preload("res://shaders/voxel_smooth_static.gdshader")
 
 ## [normal, u, v] with u × v = normal (the same table as voxel_builder.gd).
@@ -313,7 +314,7 @@ static func _material(vox: Dictionary, glow: Dictionary, tlo: Vector3i, thi: Vec
 		data[i * 4] = c.r8
 		data[i * 4 + 1] = c.g8
 		data[i * 4 + 2] = c.b8
-		data[i * 4 + 3] = 255 if glow.has(p) else roundi(clampf(c.a, 0.0, 0.5) / 0.5 * 0.9 * 255.0)
+		data[i * 4 + 3] = 255 if glow.has(p) else roundi(clampf(c.a, 0.0, 0.5) / 0.5 * 0.4 * 255.0)
 		filled[i] = 1
 		front.append(i)
 	var offs := [1, -1, ts.x, -ts.x, txy, -txy]
@@ -342,6 +343,7 @@ static func _material(vox: Dictionary, glow: Dictionary, tlo: Vector3i, thi: Vec
 		images.append(Image.create_from_data(ts.x, ts.y, false, Image.FORMAT_RGBA8, data.slice(z * txy * 4, (z + 1) * txy * 4)))
 	var tex := ImageTexture3D.new()
 	tex.create(Image.FORMAT_RGBA8, ts.x, ts.y, ts.z, false, images)
+	Weather.ensure_globals()
 	var m := ShaderMaterial.new()
 	m.shader = SHADER if dyn else SHADER_STATIC
 	m.set_shader_parameter("albedo_tex", tex)

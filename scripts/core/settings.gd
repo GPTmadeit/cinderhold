@@ -13,7 +13,7 @@ const DEFAULTS := {
 	"player": {"name": "", "color": 0},
 	"gameplay": {"sensitivity": 1.0, "aim_sensitivity": 0.8, "invert_y": false, "fov": 80.0, "show_fps": false,
 		"aim_assist": true, "touch_controls": "auto", "touch_look": 1.0, "map": "outpost"},
-	"video": {"fullscreen": false, "vsync": true, "quality": 2, "render_scale": 1.0, "max_fps": 0},
+	"video": {"fullscreen": false, "vsync": true, "quality": 2, "render_scale": 1.0, "max_fps": 0, "raytracing": "auto"},
 	"audio": {"master": 0.8, "sfx": 0.9, "music": 0.55},
 	"net": {"last_ip": "127.0.0.1", "port": 47820, "upnp": true, "presence": true},
 	"updates": {"auto_check": true},
@@ -233,12 +233,41 @@ func _forward_plus() -> bool:
 func configure_environment(env: Environment) -> void:
 	var q := quality()
 	var fp := _forward_plus()
+	var rt := raytracing()
 	env.glow_enabled = q >= 1
 	env.ssao_enabled = q >= 2 and fp
-	env.ssil_enabled = false
-	env.volumetric_fog_enabled = q >= 3 and fp
-	env.sdfgi_enabled = false
+	env.volumetric_fog_enabled = q >= 2 and fp
 	env.fog_enabled = true
+	# Ray-traced lighting: SDFGI marches rays through a signed-distance copy of
+	# the static world, so light bounces off walls and floors and dark corners
+	# fill with the colour around them; screen-space reflections and indirect
+	# light add wet sheen and colour bleeding on top.
+	env.sdfgi_enabled = rt
+	if rt:
+		env.sdfgi_cascades = 4 if q >= 3 else 3
+		env.sdfgi_min_cell_size = 0.12
+		env.sdfgi_use_occlusion = true
+		env.sdfgi_read_sky_light = true
+		env.sdfgi_bounce_feedback = 0.6
+		env.sdfgi_energy = 1.1
+		RenderingServer.environment_set_sdfgi_ray_count(RenderingServer.ENV_SDFGI_RAY_COUNT_32 if q >= 3 else RenderingServer.ENV_SDFGI_RAY_COUNT_16)
+	env.ssr_enabled = fp and (rt or q >= 3)
+	env.ssr_max_steps = 64 if q >= 3 else 40
+	env.ssr_fade_in = 0.15
+	env.ssr_fade_out = 2.0
+	env.ssil_enabled = fp and (rt or q >= 3)
+	env.ssil_intensity = 0.9
+
+
+## Ray-traced lighting (SDFGI) is on: "auto" means on the High and Ultra
+## presets with the Forward+ renderer (desktop graphics cards).
+func raytracing() -> bool:
+	if not _forward_plus():
+		return false
+	match str(data.video.get("raytracing", "auto")):
+		"on": return true
+		"off": return false
+	return quality() >= 2
 
 
 func apply_audio() -> void:

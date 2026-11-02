@@ -259,7 +259,7 @@ func _gain(a: PackedFloat32Array, g: float) -> PackedFloat32Array:
 	return out
 
 
-const SOUND_COUNT := 68
+const SOUND_COUNT := 72
 
 
 func _put(sound: String, stream: AudioStreamWAV) -> void:
@@ -439,6 +439,25 @@ func _synthesize() -> void:
 	_put("creak", _wav(_band(0.9, func(t): return 420.0 + 160.0 * sin(t * 7.0) + 80.0 * sin(t * 31.0), 25.0,
 		func(t): return 0.7 * sin(PI * clampf(t / 0.9, 0.0, 1.0)) * (0.5 + 0.5 * absf(sin(t * 53.0))))))
 	_put("distant", _wav(_band(2.4, func(t): return 140.0 + 60.0 * sin(t * 2.3), 6.0, func(t): return 0.8 * sin(PI * clampf(t / 2.4, 0.0, 1.0)))))
+	# weather: rain hiss with drips, a rolling thunderclap, a gust, a far-off siren
+	var rain := _band(6.5, func(t): return 5200.0 + 900.0 * sin(TAU * t / 3.25), 0.5, func(t): return 0.32 + 0.05 * sin(TAU * t / 2.1667))
+	var drips := _crackle(6.5, 26.0, 0.35, 4200.0)
+	var patter := _band(6.5, func(_t): return 900.0, 0.7, func(t): return 0.12 + 0.04 * sin(TAU * t / 1.625))
+	_put("amb_rain", _wav(_loopify(_gain(_seq([[rain, 0.0], [drips, 0.0], [patter, 0.0]]), 1.1), 0.5), true))
+	var crack := _noise(0.35, 5000, 0.001, 0.12, 0.9, true)
+	var roll := _band(5.5, func(t): return 70.0 + 50.0 * exp(-t * 0.8) + 25.0 * sin(t * 3.1), 1.4,
+		func(t): return 0.95 * exp(-t * 0.55) * (0.65 + 0.35 * absf(sin(t * 4.3 + sin(t * 1.7) * 2.0))))
+	_put("thunder", _wav(_gain(_mix(roll, crack, 0.02, 0.6), 1.4)))
+	_put("gust", _wav(_band(3.2, func(t): return 320.0 + 900.0 * sin(PI * clampf(t / 3.2, 0.0, 1.0)), 1.6,
+		func(t): return 0.75 * pow(sin(PI * clampf(t / 3.2, 0.0, 1.0)), 1.5))))
+	var siren := PackedFloat32Array()
+	siren.resize(int(6.0 * RATE))
+	var ph := 0.0
+	for i in siren.size():
+		var t := float(i) / RATE
+		ph += TAU * (620.0 + 260.0 * sin(TAU * t / 1.5)) / RATE
+		siren[i] = (sin(ph) * 0.5 + sin(ph * 2.0) * 0.15) * 0.35 * sin(PI * t / 6.0)
+	_put("siren", _wav(siren))
 
 	# --- small sounds ---------------------------------------------------
 	_put("impact_stone", _wav(_seq([[_noise(0.06, 5000, 0.0003, 0.008, 0.9, true), 0.0], [_clang(0.12, [[3100, 0.12, 0.02], [4700, 0.08, 0.015]], 0.2), 0.002]])))

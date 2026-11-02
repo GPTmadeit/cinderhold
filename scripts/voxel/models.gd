@@ -66,6 +66,15 @@ static func _part(b: VB, joint: Vector3, scale: float, parent := "") -> Dictiona
 ## Instance a part set under `root`: one pivot per part at its joint, nested
 ## under its parent, holding the part's mesh. Returns {part: pivot};
 ## `on_mesh(MeshInstance3D)` is called for each mesh instance.
+## Let a static model bend in the wind (shaders/voxel_smooth.gdshaderinc `sway`).
+static func _swaying(mesh: Mesh, amount: float) -> Mesh:
+	for i in mesh.get_surface_count():
+		var m := mesh.surface_get_material(i) as ShaderMaterial
+		if m:
+			m.set_shader_parameter("sway", amount)
+	return mesh
+
+
 static func instance_rig(parts: Dictionary, root: Node3D, on_mesh := Callable()) -> Dictionary:
 	var pivots := {}
 	var pending: Array = parts.keys()
@@ -805,7 +814,7 @@ static func lantern_post() -> ArrayMesh:
 		b.box(V(5, 35, -2), V(8, 35, 1), IRON, 0.04)
 		b.put(V(6, 36, -1), IRON, 0.0)
 		b.smooth = 1
-		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5), 3.5))
+		return _swaying(b.build(PROP_SCALE, Vector3(0.5, 0, 0.5), 3.5), 0.0015))
 
 
 ## Perk vending cabinet ("tonic"): body colour + glowing sign.
@@ -1057,7 +1066,7 @@ static func dead_tree(seed_v: int) -> ArrayMesh:
 				if Vector2(x, z).length() < 5 and rng.randf() < 0.4:
 					b.put(V(x, 0, z), bark.darkened(0.2), 0.1)
 		b.smooth = 1
-		return b.build(PROP_SCALE, Vector3(0.5, 0, 0.5)))
+		return _swaying(b.build(PROP_SCALE, Vector3(0.5, 0, 0.5)), 0.012))
 
 
 static func gravestone(seed_v: int) -> ArrayMesh:

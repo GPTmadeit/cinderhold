@@ -183,6 +183,100 @@ def inside(pt, poly):
     return hit
 
 
+def trace_loops(cells):
+    """Boundary loops of a set of raster cells (col, row), corners in cell units,
+    each walked with the building on the same side."""
+    nxt = {}
+    for c, r in cells:
+        if (c, r - 1) not in cells:
+            nxt.setdefault((c + 1, r), []).append((c, r))
+        if (c - 1, r) not in cells:
+            nxt.setdefault((c, r), []).append((c, r + 1))
+        if (c, r + 1) not in cells:
+            nxt.setdefault((c, r + 1), []).append((c + 1, r + 1))
+        if (c + 1, r) not in cells:
+            nxt.setdefault((c + 1, r + 1), []).append((c + 1, r))
+    loops = []
+    while nxt:
+        start = next(iter(nxt))
+        loop = [start]
+        p = start
+        while True:
+            q = nxt[p].pop()
+            if not nxt[p]:
+                del nxt[p]
+            if q == start:
+                break
+            loop.append(q)
+            p = q
+            if p not in nxt:
+                break
+        if len(loop) >= 4:
+            loops.append(loop)
+    return loops
+
+
+def simplify(loop, tol):
+    """Douglas-Peucker on a closed loop, then drop collinear corners."""
+    n = len(loop)
+    far = max(range(n), key=lambda i: (loop[i][0] - loop[0][0]) ** 2 + (loop[i][1] - loop[0][1]) ** 2)
+
+    def dp(pts):
+        if len(pts) < 3:
+            return pts
+        a, b = pts[0], pts[-1]
+        best, bi = -1.0, 0
+        for i in range(1, len(pts) - 1):
+            d = seg_dist(pts[i][0], pts[i][1], a, b)
+            if d > best:
+                best, bi = d, i
+        if best <= tol:
+            return [a, b]
+        return dp(pts[:bi + 1])[:-1] + dp(pts[bi:])
+    out = dp(loop[:far + 1])[:-1] + dp(loop[far:] + [loop[0]])[:-1]
+    clean = []
+    for i, p in enumerate(out):
+        a, b = out[i - 1], out[(i + 1) % len(out)]
+        if abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) > 1e-6:
+            clean.append(p)
+    return clean
+
+
+def squared_outlines(sky, sw, sh, count, W, H):
+    """Each building's outline loops in game metres. Buildings outside the play
+    area that fill most of their bounding box are squared off (the box is
+    filled in the raster too, where nothing else stands)."""
+    cells = [set() for _ in range(count)]
+    for i, v in enumerate(sky):
+        if v:
+            cells[v - 1].add((i % sw, i // sw))
+    out = []
+    for b in range(count):
+        cs = cells[b]
+        if not cs:
+            out.append([])
+            continue
+        c0 = min(c for c, r in cs); c1 = max(c for c, r in cs)
+        r0 = min(r for c, r in cs); r1 = max(r for c, r in cs)
+        x0, z0 = -MARGIN + c0 / SKY, -MARGIN + r0 / SKY
+        x1, z1 = -MARGIN + (c1 + 1) / SKY, -MARGIN + (r1 + 1) / SKY
+        outside = x1 < -1.0 or z1 < -1.0 or x0 > W + 1.0 or z0 > H + 1.0
+        box = (c1 - c0 + 1) * (r1 - r0 + 1)
+        if outside and len(cs) >= 0.8 * box and all(sky[r * sw + c] in (0, b + 1) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)):
+            for r in range(r0, r1 + 1):
+                for c in range(c0, c1 + 1):
+                    sky[r * sw + c] = b + 1
+            out.append([[(x0, z0), (x0, z1), (x1, z1), (x1, z0)]])
+            continue
+        loops = []
+        for loop in trace_loops(cs):
+            pts = simplify(loop, 1.4)
+            if len(pts) >= 3:
+                loops.append([(-MARGIN + c / SKY, -MARGIN + r / SKY) for c, r in pts])
+        out.append(loops)
+    return out
+
+
 def main():
     # build_times_square.py [cached.json]; with --fetch out.json it downloads first and keeps a copy
     if len(sys.argv) > 2 and sys.argv[1] == "--fetch":
@@ -345,6 +439,7 @@ def main():
         fill_polygon(b["poly"], SKY, -MARGIN, -MARGIN, sw, sh, sky, i + 1)
     for a, b, half in cuts:
         carve(sky, SKY, -MARGIN, -MARGIN, sw, sh, a, b, half)
+    outlines = squared_outlines(sky, sw, sh, len(buildings), W, H)
 
     subways = []
     for e in data["elements"]:
@@ -375,6 +470,12 @@ def main():
         f.write('const STREET := "%s"\n\n' % rle(out))
         f.write("## skyline, %d x %d from (-MARGIN, -MARGIN): 0 open, else building index + 1\n" % (sw, sh))
         f.write('const SKYLINE := "%s"\n\n' % rle(sky))
+        f.write("## per building: outline loops (x, z pairs in game metres) traced from the skyline raster,\n")
+        f.write("## simplified to straight walls; mostly-square buildings outside the play area squared off\n")
+        f.write("const OUTLINES := [\n")
+        for loops in outlines:
+            f.write("\t[%s],\n" % ", ".join("[%s]" % ", ".join("%.2f, %.2f" % p for p in loop) for loop in loops))
+        f.write("]\n\n")
         f.write("const SUBWAY := [%s]\n" % ", ".join("Vector2(%s, %s)" % s for s in subways))
         f.write("## the red steps in Duffy Square: x0, z0, x1, z1\n")
         f.write("const TKTS := Rect2(%.2f, %.2f, %.2f, %.2f)\n" % (tkts[0], tkts[1], tkts[2] - tkts[0], tkts[3] - tkts[1]))

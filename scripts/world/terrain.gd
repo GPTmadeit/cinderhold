@@ -753,7 +753,7 @@ func smooth_chunk(index: int) -> Dictionary:
 	vid.fill(-1)
 	var pos := PackedVector3Array()
 	var quads := PackedInt32Array()      # 4 corner ids per quad
-	var qinfo := PackedInt32Array()      # per quad: fi | mat << 3 | inside << 8, then the cell x, b, z
+	var qinfo := PackedInt32Array()      # per quad: fi | inside << 3, the cell x, b, z, surface code
 	for z in range(1, nz - 1):
 		for x in range(1, nx - 1):
 			var i := z * nx + x
@@ -782,8 +782,8 @@ func smooth_chunk(index: int) -> Dictionary:
 							vid[li] = pos.size()
 							pos.append(Vector3(lp))
 						quads.append(vid[li])
-					var mat := _smooth_material((ox + x) * LS, Y0 + 2 * (b - 1), (oz + z) * LS, fi)
-					qinfo.append_array([fi | mat << 3 | inside << 8, x, b, z])
+					var code := _smooth_material((ox + x) * LS, Y0 + 2 * (b - 1), (oz + z) * LS, fi)
+					qinfo.append_array([fi | inside << 3, x, b, z, code])
 	var nv := pos.size()
 	var nq := quads.size() / 4
 	var surf := [VB._new_arrays(), VB._new_arrays()]
@@ -833,12 +833,14 @@ func smooth_chunk(index: int) -> Dictionary:
 	for fi in 6:
 		keys.append(PackedInt64Array())
 	var target: Dictionary = surf[0]
+	var codes := {}                       # surface code -> index into `colors`
+	var colors: Array[Color] = []
 	for q in nq:
-		var info := qinfo[q * 4]
-		if info >> 8 == 0:
+		var info := qinfo[q * 5]
+		if info >> 3 == 0:
 			continue
 		var fi := info & 7
-		var mat := (info >> 3) & 31
+		var code := qinfo[q * 5 + 4]
 		var o := q * 4
 		var fnv := Vector3(VB.FACES[fi][0])
 		var flat := true
@@ -847,34 +849,43 @@ func smooth_chunk(index: int) -> Dictionary:
 			if pos[vi].distance_squared_to(orig[vi]) > 1e-4 or nrm[vi].dot(fnv) < 0.9995 or ao[vi] < 0.999:
 				flat = false
 				break
+		if not codes.has(code):
+			codes[code] = colors.size()
+			colors.append(surface_color(code))
 		if flat:
-			var cell := Vector3i(qinfo[q * 4 + 1], qinfo[q * 4 + 2], qinfo[q * 4 + 3])
+			var cell := Vector3i(qinfo[q * 5 + 1], qinfo[q * 5 + 2], qinfo[q * 5 + 3])
 			var f: Array = VB.FACES[fi]
 			var plane: int = cell[VB._axis(f[0])]
 			var u: int = cell[VB._axis(f[1])]
 			var v: int = cell[VB._axis(f[2])]
-			keys[fi].append(plane << 48 | v << 36 | u << 24 | mat << 9 | 255)
+			keys[fi].append(plane << 48 | v << 36 | u << 24 | int(codes[code]) << 9 | 255)
 			continue
+		var raw: Color = colors[codes[code]]
+		var lin := Color(raw.r, raw.g, raw.b).srgb_to_linear()
 		var start: int = target.v.size()
 		for k in 4:
 			var vi := quads[o + k]
 			target.v.append((pos[vi] + shift - pivot) * scale)
 			target.n.append(nrm[vi])
-			target.c.append(Color(ao[vi], ao[vi], ao[vi], (mat + 0.5) / 32.0))
+			target.c.append(Color(lin.r * ao[vi], lin.g * ao[vi], lin.b * ao[vi], raw.a))
 		# split along the shorter diagonal so rounded edges stay convex
 		if pos[quads[o]].distance_squared_to(pos[quads[o + 2]]) <= pos[quads[o + 1]].distance_squared_to(pos[quads[o + 3]]):
 			target.i.append_array([start, start + 2, start + 1, start, start + 3, start + 2])
 		else:
 			target.i.append_array([start, start + 3, start + 1, start + 1, start + 3, start + 2])
-	var colors: Array[Color] = []
-	for mi in M_COUNT:
-		colors.append(Color(1, 1, 1, (mi + 0.5) / 32.0))
 	for fi in 6:
 		if keys[fi].is_empty():
 			continue
 		keys[fi].sort()
 		VB._merge(keys[fi], fi, Vector3i(ox, 0, oz), colors, surf, scale, pivot)
 	return surf[0]
+
+
+## A surface code from _smooth_material as a vertex colour: rgb tints the
+## surface (sRGB), alpha carries the material id / 32 for the terrain shader.
+## The outpost's surfaces are drawn entirely by the shader, so white.
+func surface_color(code: int) -> Color:
+	return Color(1, 1, 1, (code % 64 + 0.5) / 32.0)
 
 
 ## Lattice occupancy at a lattice-space point (cell centres at +0.5), trilinear.

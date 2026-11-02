@@ -20,6 +20,7 @@ const MAPS := {
 	"times_square": preload("res://scripts/world/maps/times_square.gd"),
 }
 const AmbienceScript := preload("res://scripts/world/ambience.gd")
+const WeatherScript := preload("res://scripts/world/weather.gd")
 
 var W := 0
 var H := 0
@@ -53,6 +54,7 @@ static func map_attribution(id: String) -> String:
 ## several frames behind a loading screen (await it); without one it runs
 ## straight through, which tests rely on.
 func build(for_menu := false, report := Callable(), vent_seed := 0, which := "outpost") -> void:
+	WeatherScript.ensure_globals()
 	map_id = which if MAPS.has(which) else "outpost"
 	map = MAPS[map_id].new()
 	_report = report
@@ -91,6 +93,8 @@ func build(for_menu := false, report := Callable(), vent_seed := 0, which := "ou
 	await _finish_tasks(props_task, 0.7, 0.86, "Furnishing the outpost…" if not custom else "Barricading the streets…")
 	if not custom:
 		await _build_props()
+		if not "grass" in off:
+			_build_grass()
 	_place_vents()
 	await _step(0.9, "Hanging the doors…")
 	_build_doors()
@@ -98,6 +102,11 @@ func build(for_menu := false, report := Callable(), vent_seed := 0, which := "ou
 	await _step(0.96, "Stirring the ash…")
 	if not "atmosphere" in off:
 		_build_atmosphere()
+	if not "weather" in off and world_env:
+		weather = WeatherScript.new()
+		weather.name = "Weather"
+		add_child(weather)
+		weather.setup(self, world_env.environment, map_id == "times_square")
 	for n in get_children():
 		if ("lights" in off and n is Light3D) or ("particles" in off and n is GPUParticles3D) \
 				or ("labels" in off and n is Label3D):
@@ -112,6 +121,9 @@ var _slice_t := 0
 var _vent_seed := 0
 ## Background sound (scripts/world/ambience.gd): fires, vents, hum, wind.
 var ambience: Node3D
+## Wind, mist, lightning and rain (scripts/world/weather.gd).
+var weather: Node3D
+var world_env: WorldEnvironment
 
 
 ## Report progress and, when building asynchronously, hand the frame back once
@@ -256,6 +268,70 @@ func _build_colliders() -> void:
 				_add_box(Vector3((x0 + x) / 2.0, 3.5, y + 0.5), Vector3(x - x0, 7.0, 1.0))
 			else:
 				x += 1
+
+
+# =========================================================================
+# Grass
+# =========================================================================
+
+## A few blades leaning out from one root, UV.y 0 at the root, 1 at the tip.
+static func _clump_mesh(rng: RandomNumberGenerator) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for b in 6:
+		var a := rng.randf() * TAU
+		var lean := Vector3(cos(a), 0, sin(a)) * rng.randf_range(0.03, 0.12)
+		var h := rng.randf_range(0.14, 0.36)
+		var w := rng.randf_range(0.012, 0.022)
+		var side := Vector3(-sin(a), 0, cos(a)) * w
+		var base := Vector3(cos(a), 0, sin(a)) * rng.randf_range(0.0, 0.04)
+		var mid := base + lean * 0.45 + Vector3.UP * h * 0.55
+		var top := base + lean + Vector3.UP * h
+		var n := Vector3(cos(a), 0.6, sin(a)).normalized()
+		for tri in [[base - side, 0.0, base + side, 0.0, mid + side * 0.6, 0.55], [base - side, 0.0, mid + side * 0.6, 0.55, mid - side * 0.6, 0.55],
+				[mid - side * 0.6, 0.55, mid + side * 0.6, 0.55, top, 1.0]]:
+			for k in 3:
+				st.set_normal(n)
+				st.set_uv(Vector2(0, tri[k * 2 + 1]))
+				st.add_vertex(tri[k * 2])
+	return st.commit()
+
+
+## Grass in the garden and weeds between the courtyard's cobbles, swaying
+## in the wind (shaders/grass.gdshader).
+func _build_grass() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4242
+	var density: float = [4.0, 8.0, 12.0, 16.0][Settings.quality()]
+	var spots: Array[Transform3D] = []
+	for y in H:
+		for x in W:
+			var ch := _floor_ch(x, y)
+			var per: float = density if ch == ":" else (density * 0.08 if ch == "." else 0.0)
+			if per <= 0.0 or not is_walkable(Vector2i(x, y)):
+				continue
+			var n := int(per) + int(rng.randf() < per - int(per))
+			for k in n:
+				var p := Vector3(x + rng.randf(), 0.0, y + rng.randf())
+				var s := rng.randf_range(0.7, 1.35) * (0.7 if ch == "." else 1.0)
+				spots.append(Transform3D(Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s * rng.randf_range(0.8, 1.3), s)), p))
+	if spots.is_empty():
+		return
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = _clump_mesh(rng)
+	mm.instance_count = spots.size()
+	for i in spots.size():
+		mm.set_instance_transform(i, spots[i])
+	var mat := ShaderMaterial.new()
+	mat.shader = preload("res://shaders/grass.gdshader")
+	mm.mesh.surface_set_material(0, mat)
+	var mi := MultiMeshInstance3D.new()
+	mi.multimesh = mm
+	mi.name = "Grass"
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.visibility_range_end = 35.0
+	add_child(mi)
 
 
 # =========================================================================
@@ -588,6 +664,7 @@ func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
+	world_env = we
 
 	var moon := DirectionalLight3D.new()
 	moon.light_color = Color("8fa0d8")
