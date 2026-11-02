@@ -1,7 +1,9 @@
 extends CharacterBody3D
 ## A Husk, Runner or Brute. The host runs the AI and physics; every other
 ## peer interpolates snapshots. All peers animate the jointed voxel model.
-## Collision shape 0 is the body, shape 1 is the head (for headshots).
+## Collision shape 0 is the body, shape 1 is the head (for headshots); the
+## head box follows the animated head, so a leaning Runner's head is still
+## where it looks.
 
 const Prof := preload("res://scripts/core/prof.gd")
 const M := preload("res://scripts/voxel/models.gd")
@@ -43,6 +45,8 @@ var _target: Node
 var _enraged := false
 var _flinch := 0.0
 var _snaps: Array = []        # [time, pos, yaw, anim, speed]
+var _head_shape: CollisionShape3D
+var _head_centre := Vector3.ZERO   # middle of the head, from its neck pivot
 var _rng := RandomNumberGenerator.new()
 
 
@@ -70,13 +74,14 @@ func setup(g: Node, id: int, k: String, variant: int, pos: Vector3, health: floa
 	body.shape = cap
 	body.position.y = cap.height * 0.5
 	add_child(body)
-	var head := CollisionShape3D.new()
+	# a little bigger than the painted head: ears, jaw and hair (the brute's
+	# helm and horn roots), so shots that look like headshots count
+	_head_shape = CollisionShape3D.new()
 	var hb := BoxShape3D.new()
-	var hs := 0.5 if k == "brute" else 0.42
-	hb.size = Vector3(hs, hs, hs)
-	head.shape = hb
-	head.position = Vector3(0, _stats.height - hs * 0.55, -0.03)
-	add_child(head)
+	hb.size = Vector3(0.9, 0.8, 0.9) if k == "brute" else Vector3(0.54, 0.54, 0.54)
+	_head_shape.shape = hb
+	_head_centre = Vector3(0, 0.4, -0.02) if k == "brute" else Vector3(-0.03, 0.25, -0.03)
+	add_child(_head_shape)
 
 	_model = Node3D.new()
 	add_child(_model)
@@ -139,6 +144,9 @@ var _chase_direct := false
 var _think_t := 0.0
 var _push := Vector3.ZERO
 var _path_dist := INF
+var _lane := 0.0       # metres to the side of the path this enemy keeps to
+var _lane_t := 0.0     # until it picks a new one
+var _flank := 0.0      # radians off the straight line it prefers when routes tie
 var _flash_sent := 0.0
 
 
@@ -155,15 +163,48 @@ func _think() -> void:
 	var tp: Vector3 = _target.global_position
 	var flat := Vector2(tp.x - global_position.x, tp.z - global_position.z)
 	_chase_direct = flat.length() < 3.5 and _clear_line(tp)
+	_lane_t -= THINK_INTERVAL
+	if _lane_t <= 0.0:
+		_roll_lane()
+	var sway := _lane + sin(Time.get_ticks_msec() * 0.0007 + enemy_id) * 0.35
 	if _chase_direct:
 		_goal = tp
 	else:
-		_goal = game.arena.flow_step(t.field, global_position)
+		# lean toward this enemy's own flank so the crowd spreads over the routes
+		var prefer := flat.normalized().rotated(_flank) if flat.length() > 0.01 else Vector2.ZERO
+		_goal = game.arena.flow_step(t.field, global_position, prefer)
 		# look one more step ahead so paths round corners smoothly
-		var ahead: Vector3 = game.arena.flow_step(t.field, _goal)
+		var ahead: Vector3 = game.arena.flow_step(t.field, _goal, prefer)
 		if _clear_line(ahead):
 			_goal = _goal.lerp(ahead, 0.6)
+		_goal = _off_lane(_goal, _goal - global_position, sway)
 	_push = _separation()
+
+
+## Each enemy walks its own line a little to one side of the path (and drifts
+## between lines now and then), so a horde comes down a street abreast rather
+## than single file. Some lean toward a flank when routes tie.
+func _roll_lane() -> void:
+	_lane_t = _rng.randf_range(3.0, 8.0)
+	_lane = _rng.randf_range(-1.0, 1.0)
+	_flank = 0.0 if _rng.randf() < 0.3 else _rng.randf_range(0.35, 1.0) * (1.0 if _rng.randf() < 0.5 else -1.0)
+
+
+## `goal` moved `amount` metres sideways from `dir`, as far as open floor
+## allows (narrow doorways squeeze everyone back onto the path).
+func _off_lane(goal: Vector3, dir: Vector3, amount: float) -> Vector3:
+	dir.y = 0.0
+	if dir.length() < 0.05 or absf(amount) < 0.05:
+		return goal
+	var side := Vector3(-dir.z, 0.0, dir.x).normalized() * amount
+	var r: float = _stats.radius + 0.1
+	for i in 3:
+		var p := goal + side
+		var mid := global_position.lerp(p, 0.5)
+		if game.arena.circle_free(Vector2(p.x, p.z), r) and game.arena.circle_free(Vector2(mid.x, mid.z), r):
+			return p
+		side *= 0.5
+	return goal
 
 
 func _act(dt: float) -> void:
@@ -192,7 +233,8 @@ func _act(dt: float) -> void:
 		else:
 			anim = Anim.MOVE
 			if _chase_direct:
-				_goal = tp    # close in on where the player is now
+				# close in on where the player is now, from this enemy's own side
+				_goal = tp if dist < 2.2 else _off_lane(tp, to, _lane * 0.7)
 			var dir := _goal - global_position
 			dir.y = 0.0
 			if dist < _stats.reach * 0.8:
@@ -341,6 +383,8 @@ func _animate(dt: float) -> void:
 		"phase": _phase, "t": Time.get_ticks_msec() * 0.001 + float(enemy_id) * 1.7, "speed": move_speed,
 		"rise": _rise, "attack": clampf(_attack_t / _stats.windup, 0.0, 1.0) if _attack_t >= 0.0 else -1.0,
 		"flinch": _flinch}, dt)
+	var head: Transform3D = global_transform.affine_inverse() * (_parts.head as Node3D).global_transform
+	_head_shape.transform = Transform3D(head.basis.orthonormalized(), head * _head_centre)
 
 
 func _footstep(brute: bool) -> void:

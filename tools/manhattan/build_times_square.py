@@ -25,6 +25,16 @@ FINE = 8                    # street-level raster: 8 per game metre
 SKY = 4                     # skyline raster: 4 per game metre
 MARGIN = 30.0               # skyline beyond the play area, game metres
 
+# Gameplay edits to the real city, in game metres. Side streets are cut back
+# to at least this half-width (they were ~3.6 m wide: a crowd could seal them),
+# and two alleys cut through the blocks between 44th and 45th so the side
+# streets behind the barricades loop back instead of dead-ending at the map's
+# edge. Shubert Alley is real but sits ~7 m west of the map; this is it moved
+# in. The east one is made up.
+SIDE_STREET_HALF = 2.1
+ALLEYS = [((2.5, 34.0), (2.5, 51.0)), ((36.8, 34.0), (36.8, 51.0))]
+ALLEY_HALF = 1.5
+
 QUERY = """[out:json][timeout:90];
 (
   way["building"]({s},{w},{n},{e});
@@ -114,6 +124,18 @@ def distance(grid_open, w, h):
                     if c > 0: best = min(best, d[i + w - 1] + 4)
                 d[i] = best
     return [x / 3.0 for x in d]
+
+
+def carve(grid, res, ox, oz, w, h, a, b, half):
+    """Open every cell of grid[w*h] within `half` of segment a-b (game metres)."""
+    c0 = max(0, int((min(a[0], b[0]) - half - ox) * res))
+    c1 = min(w - 1, int((max(a[0], b[0]) + half - ox) * res) + 1)
+    r0 = max(0, int((min(a[1], b[1]) - half - oz) * res))
+    r1 = min(h - 1, int((max(a[1], b[1]) + half - oz) * res) + 1)
+    for r in range(r0, r1 + 1):
+        for c in range(c0, c1 + 1):
+            if seg_dist(ox + (c + 0.5) / res, oz + (r + 0.5) / res, a, b) <= half:
+                grid[r * w + c] = 0
 
 
 def seg_dist(px, pz, a, b):
@@ -242,6 +264,10 @@ def main():
             half = (9.0 if "Avenue" in name else (7.0 if "42nd" in name else 5.25)) * K
             pts = [game_xy(*nodes[n]) for n in e["nodes"] if n in nodes]
             roads.append((pts, half, t.get("name")))
+    cuts = [(a, b, SIDE_STREET_HALF) for pts, _h, n in roads if "Street" in n and "42nd" not in n for a, b in zip(pts, pts[1:])]
+    cuts += [(a, b, ALLEY_HALF) for a, b in ALLEYS]
+    for a, b, half in cuts:
+        carve(fine, FINE, 0.0, 0.0, fw, fh, a, b, half)
     road = [False] * (fw * fh)
     for pts, half, _n in roads:
         for a, b in zip(pts, pts[1:]):
@@ -317,6 +343,8 @@ def main():
     sky = [0] * (sw * sh)
     for i, b in enumerate(buildings):
         fill_polygon(b["poly"], SKY, -MARGIN, -MARGIN, sw, sh, sky, i + 1)
+    for a, b, half in cuts:
+        carve(sky, SKY, -MARGIN, -MARGIN, sw, sh, a, b, half)
 
     subways = []
     for e in data["elements"]:

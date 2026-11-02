@@ -88,6 +88,14 @@ jobs:
       - name: Check encryption pinning
         run: godot --headless --path . res://tests/dtls_pinning.tscn
 
+      # Headshots must land on the head the player sees, even mid-sprint.
+      - name: Check head hitboxes
+        run: godot --headless --path . res://tests/head_hitbox.tscn
+
+      # A horde must spread over the street, not walk single file.
+      - name: Check crowd spread
+        run: godot --headless --path . res://tests/crowd_spread.tscn
+
       - name: Export
         env:
           GODOT_ANDROID_KEYSTORE_RELEASE_USER: cinderhold

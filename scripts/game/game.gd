@@ -20,6 +20,9 @@ const SNAP_RATE := 15.0
 const INTERMISSION := 10.0
 const POWERUP_LIFE := 26.0
 const POWERUP_KINDS := ["resupply", "double", "deadeye", "purge"]
+## How often each power-up drops, relative to the others. Deadeye is 10%
+## rarer than an even share: 22.5% of drops instead of 25%.
+const POWERUP_WEIGHTS := {"resupply": 1.0, "double": 1.0, "deadeye": 0.871, "purge": 1.0}
 
 var arena: Node3D
 var players_root: Node3D
@@ -848,7 +851,7 @@ func _maybe_drop(pos: Vector3) -> void:
 	if _rng.randf() < chance:
 		_kills_since_drop = 0
 		_drops_this_round += 1
-		var kind: String = POWERUP_KINDS[_rng.randi() % POWERUP_KINDS.size()]
+		var kind: String = POWERUP_KINDS[_rng.rand_weighted(PackedFloat32Array(POWERUP_KINDS.map(func(k): return POWERUP_WEIGHTS[k])))]
 		_powerup_spawn.rpc(_next_pu, kind, Vector3(pos.x, 0, pos.z))
 		_next_pu += 1
 

@@ -4,8 +4,9 @@ extends RefCounted
 ## Broadway crosses 7th Avenue, at one fifth of real size (heights shrink
 ## less, so the streets stay canyons). Players hold the square between 44th
 ## and 45th; barricades open the north end (Duffy Square), the south end
-## (One Times Square) and the side streets. Map data (c) OpenStreetMap
-## contributors, ODbL.
+## (One Times Square) and the side streets. The side streets loop: an alley
+## on each side joins 45th to 44th, and the two barricades on a loop open
+## together. Map data (c) OpenStreetMap contributors, ODbL.
 ##
 ## Grid legend (1 m cells): # building, . street, X rubble at the map edge,
 ## S spawn, A-F barricades.
@@ -19,22 +20,23 @@ const TITLE := "Times Square"
 const ATTRIBUTION := "Map data © OpenStreetMap contributors, ODbL (openstreetmap.org/copyright)"
 const WALKABLE := ".S"
 const FLOOR_CHARS := "."
-const VENT_QUOTA := {"square": 2, "north": 1, "south": 1, "streets": 1}
+const VENT_QUOTA := {"square": 2, "north": 1, "south": 1, "streets": 2}
 
+## "with": the barricade at the other end of the same loop, opened with it
 const DOORS := {
 	"A": {"cost": 1000, "name": "Duffy Square Barricade"},
 	"B": {"cost": 1000, "name": "43rd Street Barricade"},
-	"C": {"cost": 750, "name": "West 45th Barricade"},
-	"D": {"cost": 750, "name": "East 45th Barricade"},
-	"E": {"cost": 750, "name": "West 44th Barricade"},
-	"F": {"cost": 750, "name": "East 44th Barricade"},
+	"C": {"cost": 1000, "name": "West 45th Barricade", "with": "E"},
+	"D": {"cost": 1000, "name": "East 45th Barricade", "with": "F"},
+	"E": {"cost": 1000, "name": "West 44th Barricade", "with": "C"},
+	"F": {"cost": 1000, "name": "East 44th Barricade", "with": "D"},
 }
 
 ## [letter, x0, y0, x1, y1]: where each barricade stands
 const BARRICADES := [
-	["A", 11, 32, 20, 32], ["B", 15, 52, 23, 52],
-	["C", 10, 33, 10, 35], ["D", 25, 33, 25, 35],
-	["E", 12, 49, 12, 51], ["F", 25, 48, 25, 51],
+	["A", 13, 31, 20, 31], ["B", 14, 52, 23, 52],
+	["C", 10, 32, 10, 35], ["D", 25, 32, 25, 35],
+	["E", 12, 48, 12, 51], ["F", 25, 48, 25, 51],
 ]
 
 const PLACEMENTS := [
@@ -44,7 +46,7 @@ const PLACEMENTS := [
 	{"kind": "wallbuy", "key": "breacher", "cell": Vector2i(25, 58), "face": Vector3.LEFT},
 	{"kind": "tonic", "key": "ironhide", "cell": Vector2i(15, 46), "face": Vector3.RIGHT},
 	{"kind": "tonic", "key": "quickhands", "cell": Vector2i(20, 22), "face": Vector3.LEFT},
-	{"kind": "tonic", "key": "fleetfoot", "cell": Vector2i(30, 33), "face": Vector3.BACK},
+	{"kind": "tonic", "key": "fleetfoot", "cell": Vector2i(30, 32), "face": Vector3.BACK},
 	{"kind": "tonic", "key": "secondwind", "cell": Vector2i(15, 70), "face": Vector3.RIGHT},
 	{"kind": "forge", "key": "forge", "cell": Vector2i(9, 13), "face": Vector3.BACK},
 	{"kind": "cache", "key": "cache", "cell": Vector2i(16, 76), "face": Vector3.BACK},
@@ -102,7 +104,7 @@ func _init() -> void:
 
 
 func zone_of(c: Vector2i) -> String:
-	if c.y <= 32:
+	if c.y <= 31:
 		return "north"
 	if c.y >= 52:
 		return "south"
@@ -110,7 +112,7 @@ func zone_of(c: Vector2i) -> String:
 		return "streets" if (c.x <= 10 or c.x >= 25) else "square"
 	if c.y >= 48:
 		return "streets" if (c.x <= 12 or c.x >= 25) else "square"
-	return "square"
+	return "streets" if (c.x <= 5 or c.x >= 33) else "square"     # the alleys
 
 
 func floor_style(_x: int, _y: int, _ch: String) -> String:

@@ -688,6 +688,9 @@ func open_door(letter: String, animate := true) -> void:
 			break
 	_recompute_active()
 	door_opened.emit(letter)
+	var partner: String = map.DOORS[letter].get("with", "")
+	if partner != "":
+		open_door(partner, animate)
 
 
 static var _dust_pm: ParticleProcessMaterial
@@ -839,7 +842,10 @@ func circle_free(c: Vector2, r: float) -> bool:
 
 
 ## The best next cell centre to walk toward on a field from position `p`.
-func flow_step(field: PackedInt32Array, p: Vector3) -> Vector3:
+## With `prefer` (a flat direction), any neighbour that still gets closer can
+## win if it heads that way, so a crowd fans out over the equally good routes
+## instead of filing down the same cells.
+func flow_step(field: PackedInt32Array, p: Vector3, prefer := Vector2.ZERO) -> Vector3:
 	var c := cell_of(p)
 	if not is_walkable(c):
 		# shoved into a prop: head for any walkable neighbour
@@ -848,7 +854,9 @@ func flow_step(field: PackedInt32Array, p: Vector3) -> Vector3:
 				return cell_center(c + d)
 		return p
 	var best := c
-	var best_d := field[c.y * W + c.x]
+	var here := field[c.y * W + c.x]
+	var best_d := here
+	var best_score := -INF
 	for k in 8:
 		var d: Vector2i = NEIGH[k]
 		var n := c + d
@@ -857,9 +865,17 @@ func flow_step(field: PackedInt32Array, p: Vector3) -> Vector3:
 		if k >= 4 and (not is_walkable(Vector2i(c.x + d.x, c.y)) or not is_walkable(Vector2i(c.x, c.y + d.y))):
 			continue
 		var nd := field[n.y * W + n.x]
-		if nd < best_d:
-			best_d = nd
-			best = n
+		if prefer == Vector2.ZERO:
+			if nd < best_d:
+				best_d = nd
+				best = n
+		elif nd < here:
+			# progress per metre walked (1 = straight downhill), plus the lean
+			var step := DIAGONAL if k >= 4 else STRAIGHT
+			var score := float(here - nd) / step + 0.45 * prefer.dot(Vector2(d).normalized())
+			if score > best_score:
+				best_score = score
+				best = n
 	return cell_center(best)
 
 

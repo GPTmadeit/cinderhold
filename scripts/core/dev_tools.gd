@@ -365,7 +365,8 @@ func _physics_process(dt: float) -> void:
 				game.add_points(peer, 30000))
 		_bot_once(2.0, "doors", func():
 			game.request("door", "A")
-			game.request("door", "B"))
+			game.request("door", "B")
+			game.request("door", "C"))
 	if not buyer:
 		_bot_aim_and_fire(game, p)
 		_bot_tick_log(dt, game, p)
