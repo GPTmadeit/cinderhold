@@ -16,7 +16,7 @@ const DEFAULTS := {
 	"video": {"fullscreen": false, "vsync": true, "quality": 2, "render_scale": 1.0, "max_fps": 0},
 	"audio": {"master": 0.8, "sfx": 0.9, "music": 0.55},
 	"net": {"last_ip": "127.0.0.1", "port": 47820, "upnp": true, "presence": true},
-	"updates": {"token": "", "auto_check": true},
+	"updates": {"auto_check": true},
 }
 
 ## action -> default key (or mouse button when prefixed with "mouse_").

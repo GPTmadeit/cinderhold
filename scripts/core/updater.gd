@@ -5,9 +5,8 @@ extends Node
 ## content patch `.pck`. When the release was built with the same engine as
 ## this install, the patch is downloaded to user://updates and mounted by
 ## boot.gd on the next launch. A release that needs a newer engine is offered
-## as a full download instead. The repository is public, so no account is
-## needed; an optional token (Settings → Updates) only lifts GitHub's
-## anonymous rate limit.
+## as a full download instead. The repository and its releases are public,
+## so no account or key is needed.
 ##
 ## PATCH SAFETY: never add, remove, retype or reorder this autoload's member
 ## variables; installed copies keep the old layout when a patch swaps the
@@ -50,10 +49,6 @@ func current_version() -> String:
 	return V.VERSION
 
 
-func token() -> String:
-	return str(Settings.get_v("updates", "token")).strip_edges()
-
-
 func _process(_dt: float) -> void:
 	if state == State.DOWNLOADING and _http.get_body_size() > 0:
 		progress = float(_http.get_downloaded_bytes()) / float(_http.get_body_size())
@@ -69,20 +64,12 @@ func check() -> void:
 
 
 func _check() -> void:
-	var res := await _http_get(API % V.REPO, true)
-	if res.code == 401 or (res.code == 403 and token() != ""):
-		_set_state(State.ERROR, "GitHub rejected the token (HTTP %d). Clear it in Settings → Updates or fix its access." % res.code)
-		return
+	var res := await _http_get(API % V.REPO)
 	if res.code == 403 or res.code == 429:
 		_set_state(State.ERROR, "GitHub is rate-limiting update checks from this network. Try again in a while.")
 		return
 	if res.code == 404:
-		# 404 means "no releases yet", or a repo this token can't see.
-		var repo := await _http_get("https://api.github.com/repos/%s" % V.REPO, true)
-		if repo.code == 200:
-			_set_state(State.UP_TO_DATE, "No releases published yet.")
-		else:
-			_set_state(State.ERROR, "This token can't see %s. Give it \"Contents: read\" access to that repository." % V.REPO)
+		_set_state(State.UP_TO_DATE, "No releases published yet.")
 		return
 	if res.code != 200:
 		_set_state(State.ERROR, "Update check failed (%s)." % _why(res))
@@ -198,27 +185,25 @@ func _set_state(s: State, msg: String) -> void:
 
 # --- HTTP --------------------------------------------------------------------
 
-func _headers(auth: bool, binary: bool) -> PackedStringArray:
+func _headers(binary: bool) -> PackedStringArray:
 	var h := PackedStringArray(["User-Agent: Cinderhold/" + current_version(),
 		"Accept: " + ("application/octet-stream" if binary else "application/vnd.github+json"),
 		"X-GitHub-Api-Version: 2022-11-28"])
-	if auth and token() != "":
-		h.append("Authorization: Bearer " + token())
 	return h
 
 
-func _http_get(url: String, auth: bool, binary := false) -> Dictionary:
-	var err := _http.request(url, _headers(auth, binary))
+func _http_get(url: String, binary := false) -> Dictionary:
+	var err := _http.request(url, _headers(binary))
 	if err != OK:
 		return {"code": 0, "result": err, "body": PackedByteArray(), "headers": PackedStringArray()}
 	var r: Array = await _http.request_completed
 	return {"result": r[0], "code": r[1], "headers": r[2], "body": r[3]}
 
 
-## Asset downloads redirect to a signed storage URL that must be fetched
-## without the GitHub token, so redirects are followed by hand.
+## Asset downloads redirect to a signed storage URL; redirects are followed
+## by hand so every hop can be checked to stay on https.
 func _download(asset_api_url: String) -> Dictionary:
-	var res := await _http_get(asset_api_url, true, true)
+	var res := await _http_get(asset_api_url, true)
 	var hops := 0
 	while res.code in [301, 302, 303, 307, 308] and hops < 5:
 		var loc := ""
@@ -227,7 +212,7 @@ func _download(asset_api_url: String) -> Dictionary:
 				loc = h.substr(9).strip_edges()
 		if not loc.begins_with("https://"):
 			break   # every hop stays encrypted; never follow a redirect to plain http
-		res = await _http_get(loc, false, true)
+		res = await _http_get(loc, true)
 		hops += 1
 	return res
 

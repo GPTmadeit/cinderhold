@@ -1,9 +1,8 @@
 extends Node
-## End-to-end update check: with a token from $CINDER_TOKEN (never saved),
-## check GitHub, download the patch if one is offered, and report.
+## End-to-end update check: check GitHub (no key), download the patch if one
+## is offered, and report.
 func _ready() -> void:
 	Settings.setup()
-	Settings.data.updates.token = OS.get_environment("CINDER_TOKEN")
 	Updater.setup()
 	print("running version ", Updater.current_version())
 	Updater.check()
