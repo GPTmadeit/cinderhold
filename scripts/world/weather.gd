@@ -172,6 +172,8 @@ func _lightning(dt: float) -> void:
 		var e := pow(_flash, 1.5) * flicker * (3.2 if storm else 1.3)
 		_flash_light.visible = e > 0.01
 		_flash_light.light_energy = e
+		if arena and arena.get("sky_material"):
+			arena.sky_material.set_shader_parameter("flash", e * 0.5)
 		env.ambient_light_energy = _base_ambient + e * 0.35
 	elif _flash_light.visible:
 		_flash_light.visible = false
@@ -257,6 +259,17 @@ func _dust_mesh(col: Color) -> Mesh:
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
 	q.material = m
 	return q
+
+
+## A falling drop's motion streak: thin, brightest in the middle, fading at both ends.
+static func _streak() -> ImageTexture:
+	var img := Image.create(8, 64, false, Image.FORMAT_RGBA8)
+	for y in 64:
+		var along := sin(PI * (y + 0.5) / 64.0)
+		for x in 8:
+			var across := 1.0 - absf((x + 0.5) / 4.0 - 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, pow(along, 1.5) * across * across))
+	return ImageTexture.create_from_image(img)
 
 
 static func _soft() -> GradientTexture2D:
@@ -362,13 +375,18 @@ func _build_rain(q: int) -> void:
 	pm.collision_mode = ParticleProcessMaterial.COLLISION_HIDE_ON_CONTACT
 	_rain.process_material = pm
 	var streak := QuadMesh.new()
-	streak.size = Vector2(0.012, 0.42)
+	streak.size = Vector2(0.008, 0.5)
 	var m := StandardMaterial3D.new()
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
 	m.billboard_keep_scale = true
-	m.albedo_color = Color(0.75, 0.8, 0.9, 0.28)
+	m.albedo_color = Color(0.72, 0.78, 0.88, 0.3)
+	m.albedo_texture = _streak()
+	# drops right at the lens would be fat smears; far ones fade into the haze
+	m.distance_fade_mode = BaseMaterial3D.DISTANCE_FADE_PIXEL_ALPHA
+	m.distance_fade_min_distance = 0.6
+	m.distance_fade_max_distance = 2.2
 	streak.material = m
 	_rain.draw_pass_1 = streak
 	add_child(_rain)

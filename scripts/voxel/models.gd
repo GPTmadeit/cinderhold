@@ -32,6 +32,8 @@ static var _lock := Mutex.new()
 ## loading screen builds models in parallel).
 static func cached(key: String, maker: Callable):
 	_lock.lock()
+	if VB.shared_mats.is_empty():
+		_shared_mats()
 	var hit = _cache.get(key)
 	_lock.unlock()
 	if hit != null:
@@ -43,6 +45,28 @@ static func cached(key: String, maker: Callable):
 	made = _cache[key]
 	_lock.unlock()
 	return made
+
+
+## How the shared palette takes the light (VB.MAT_*); shades of these
+## colours follow them. Models list their own colours with b.mat().
+static func _shared_mats() -> void:
+	var m := VB.shared_mats
+	for c in [IRON, IRON_DARK, BRASS, Color("6a5a50"), Color("3d3f45"), Color("26272b"), Color("2b2226"), Color("1c1517"),
+			Color("2c2e33"), Color("22252a"), Color("2f3034"), Color("2a2d33"), Color("15161a"), Color("17191c")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_METAL
+	for c in [WOOD, WOOD_DARK, Color("5a2a22")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_WOOD
+	for c in [LEATHER, Color("1a1a1a"), Color("2e2a24"), Color("2a2620"), Color("3a342c")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_LEATHER
+	for c in SHIRTS + PANTS + [Color("4d5040"), Color("3b3d33"), Color("454839"), Color("4b4a38")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_CLOTH
+	for c in [Color("8fd4e0"), Color("7ac4ff"), Color("c8f0f8")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_GLOSS
+	for c in [Color("6f7a62"), Color("7d6f63"), Color("5a2a24"), Color("5e5a54"),
+			Color("c99a78"), Color("8d5d3e"), Color("e0b896"), Color("6b4430")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_SKIN
+	for c in [BONE, Color("4a4d3c"), Color("7a4a2a"), Color("140c0a"), Color("100a08"), Color("1e1a17")]:
+		m[c.to_rgba32() | 0xff] = VB.MAT_PLAIN
 
 
 static func V(x: int, y: int, z: int) -> Vector3i:
@@ -556,8 +580,9 @@ static func _gun(id: String, upgraded: bool) -> ArrayMesh:
 			g.fput(F(-2, 7, -12), accent, 0.0)
 			g.fput(F(3, 7, -12), accent, 0.0)
 			# iron sights: a notch at the back, a post at the front with a glowing dot
-			g.fbox(F(-2, 12, 0), F(-1, 14, 1), dark, 0.0)
-			g.fbox(F(2, 12, 0), F(3, 14, 1), dark, 0.0)
+			g.fbox(F(-2, 12, 0), F(3, 12, 1), dark, 0.0)              # low rear sight with a notch
+			g.fbox(F(-2, 13, 0), F(-1, 13, 1), dark, 0.0)
+			g.fbox(F(2, 13, 0), F(3, 13, 1), dark, 0.0)
 			g.fbox(F(0, 12, -22), F(1, 14, -21), dark, 0.0)
 			g.fput(F(0, 14, -21), accent if not upgraded else EMBER_HOT, 0.0, true)
 			_set_sight(id, "iron", Vector3(0.0, 0.15, -0.21))
@@ -686,7 +711,7 @@ static func arms() -> Dictionary:
 				b.fput(F(fx, 1, -9), Color("3a342c"), 0.0)             # knuckles
 			b.fbox(F(3, -1, -9), F(3, 1, -6), Color("2a2620"), 0.05)  # thumb
 			b.fpaint(F(-2, 2, -6), F(3, 2, -3), Color("3a342c"), 0.02)  # glove seam
-			b.paint(V(-1, 1, 7), V(1, 1, 9), Color("e8803a"), 0.04)   # armband
+			b.paint(V(-1, 1, 7), V(1, 1, 9), Color("8a5a36"), 0.04)   # armband
 			b.smooth = 1
 			parts["r" if side > 0 else "l"] = b.build(0.02, Vector3(0.5, 0, 0.5))
 		return parts)

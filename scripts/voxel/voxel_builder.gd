@@ -29,8 +29,20 @@ const FACES := [
 ]
 const AO_CURVE := [0.42, 0.62, 0.8, 1.0]
 
+## Surface classes: how a colour responds to light on rounded models
+## (shaders/voxel_smooth.gdshaderinc). Plain is the old painted look.
+const MAT_PLAIN := 0
+const MAT_METAL := 1
+const MAT_WOOD := 2
+const MAT_CLOTH := 3
+const MAT_SKIN := 4
+const MAT_LEATHER := 5
+const MAT_GLOSS := 6
+
 static var _materials := {}
 static var _mat_lock := Mutex.new()
+## Classes every model shares (models.gd fills it with its palette).
+static var shared_mats := {}
 
 var vox := {}      # Vector3i (fine grid) -> Color (alpha = colour noise amount)
 var glow := {}     # Vector3i -> true
@@ -47,6 +59,8 @@ var smooth_step := 0
 ## treats the cut as continuing, so elbows and knees meet flush.
 var cut_below := NO_CUT
 var cut_above := NO_CUT
+## This model's own colour -> MAT_* classes (see mat()).
+var mats := {}
 
 
 func _init(resolution := 1) -> void:
@@ -240,11 +254,63 @@ static func material(glowing: bool, strength := 2.5, scale := 0.0625, pivot := V
 
 ## Build the mesh. `scale` is the edge length of one authoring (coarse) voxel
 ## in metres and `pivot` is the coarse-grid point that becomes the mesh origin.
+## Give these colours (and darker or lighter shades of them) surface class `cls`.
+func mat(cls: int, colors: Array) -> void:
+	for c: Color in colors:
+		mats[c.to_rgba32() | 0xff] = cls
+
+
+## The class of colour `c`: listed exactly in `own` or `shared`, else the
+## listed colour of the same hue it is a shade of, else plain paint.
+static func class_of(c: Color, own: Dictionary, shared: Dictionary) -> int:
+	var key := c.to_rgba32() | 0xff
+	if own.has(key):
+		return own[key]
+	if shared.has(key):
+		return shared[key]
+	var v := Vector3(c.r, c.g, c.b)
+	var l := v.length()
+	if l < 0.02:
+		return MAT_PLAIN
+	var best := MAT_PLAIN
+	var best_dot := 0.9993
+	for table: Dictionary in [own, shared]:
+		for k: int in table:
+			var o := Color.hex(k)
+			var ov := Vector3(o.r, o.g, o.b)
+			var ol := ov.length()
+			if ol < 0.02 or l / ol < 0.45 or l / ol > 1.7:
+				continue
+			var d := v.dot(ov) / (l * ol)
+			if d > best_dot:
+				best_dot = d
+				best = table[k]
+	return best
+
+
+## vox with each voxel's class folded into its alpha (class + noise amount),
+## the form smooth_mesher reads.
+func _classified() -> Dictionary:
+	if mats.is_empty() and shared_mats.is_empty():
+		return vox
+	var memo := {}
+	var out := {}
+	for p: Vector3i in vox:
+		var c: Color = vox[p]
+		var key := c.to_rgba32() | 0xff
+		var cls: int = memo.get(key, -1)
+		if cls < 0:
+			cls = class_of(c, mats, shared_mats)
+			memo[key] = cls
+		out[p] = Color(c.r, c.g, c.b, cls + clampf(c.a, 0.0, 0.5))
+	return out
+
+
 func build(scale: float, pivot := Vector3.ZERO, glow_strength := 2.5) -> ArrayMesh:
 	if smooth > 0 and RELAX:
 		# characters and guns round on the fine grid; static props on the authoring grid
 		var step := smooth_step if smooth_step > 0 else (1 if dynamic else res)
-		return Smooth.build_relaxed(vox, glow, RELAX_PASSES[mini(smooth, 5)] if step == 1 else RELAX_PASSES_COARSE, scale / res,
+		return Smooth.build_relaxed(_classified(), glow, RELAX_PASSES[mini(smooth, 5)] if step == 1 else RELAX_PASSES_COARSE, scale / res,
 			pivot * res, glow_strength, dynamic, cut_below, cut_above, step)
 	if smooth > 0:
 		return Smooth.build(vox, glow, smooth_step if smooth_step > 0 else res, smooth, scale / res, pivot * res, glow_strength, dynamic,

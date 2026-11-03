@@ -30,6 +30,20 @@ float fbm(vec2 p) {
 	return vnoise(p) * 0.6 + vnoise(p * 2.7 + 13.1) * 0.4;
 }
 
+// weathered stone: granite speckle (faded out before it shimmers), pits,
+// stains and a lighter, smoother worn top. `p` is the bevel profile.
+void weather_stone(vec2 q, float hs, float p, inout vec3 col, inout float h, inout float rough) {
+	float fine = 1.0 - smoothstep(0.004, 0.012, fwidth(q.x));
+	float speck = (vnoise(q * 95.0) - 0.5) * fine;
+	float pit = smoothstep(0.72, 0.8, vnoise(q * 26.0 + hs * 40.0)) * fine;
+	float stain = smoothstep(0.45, 0.85, fbm(q * 1.7 + hs * 17.0));
+	col *= 1.0 + speck * 0.35 - pit * 0.25;
+	col = mix(col, col * vec3(0.78, 0.74, 0.68), stain * 0.55);      // seeping grime
+	col *= mix(0.86, 1.06, p);                                       // worn tops catch the light
+	h += (fbm(q * 7.0 + hs * 9.0) - 0.5) * 0.006 * p - pit * 0.0025 + speck * 0.0008;
+	rough = clamp(rough + pit * 0.1 - p * 0.08 + speck * 0.1, 0.05, 1.0);
+}
+
 // rounded profile: 0 in the joint, rising to 1 over `bevel` past it
 float pillow(float d, float joint, float bevel) {
 	float e = clamp((d - joint) / bevel, 0.0, 1.0);
@@ -117,6 +131,7 @@ void fragment() {
 		} else {
 			courses(up ? fl * vec2(1.0, 3.0) : wall, 0.375, 0.3125, 0.72, id, d);
 		}
+		d += (vnoise((up ? fl : wall) * 18.0) - 0.5) * 0.018;     // chipped, uneven arrises
 		float hs = h21(id);
 		vec3 base = mat == 2 ? vec3(0.27, 0.245, 0.25) : (mat == 3 ? vec3(0.42, 0.39, 0.38) : vec3(0.36, 0.33, 0.325));
 		if (mat == 10) base = vec3(0.3, 0.28, 0.29);
@@ -138,6 +153,9 @@ void fragment() {
 			col *= 1.0 - 0.18 * smoothstep(0.55, 0.9, vnoise(vec2(along * 2.3, wpos.y * 0.35)));
 		}
 		rough = mix(0.97, 0.82, p);
+		weather_stone(up ? fl : wall, hs, p, col, h, rough);
+		// dirt packed into the joints
+		col = mix(col, vec3(0.09, 0.08, 0.07), smoothstep(joint * 2.5, 0.0, d) * 0.6);
 	} else if (mat == 4) {
 		// hall tiles: metre squares, checkered, bevelled
 		vec2 f = fract(fl);
@@ -153,6 +171,13 @@ void fragment() {
 		base = mix(base, base * 1.35, vein * 0.5);
 		col = mix(vec3(0.14, 0.13, 0.14), base, smoothstep(0.006, 0.02, d));
 		rough = mix(0.9, 0.42, p);
+		// scuffed where people walk, with the odd crack
+		float scuff = fbm(fl * 2.0 + 3.0);
+		rough = mix(rough, 0.7, smoothstep(0.5, 0.8, scuff) * p);
+		col *= 0.94 + scuff * 0.1;
+		float crack = smoothstep(0.012, 0.0, abs(vnoise(fl * 2.4 + hs * 30.0) - 0.5)) * step(0.82, hs);
+		col *= 1.0 - crack * 0.6;
+		h -= crack * 0.004;
 	} else if (mat == 5) {
 		// the great hall's runner: red, gold border, diamonds
 		float e = wpos.z - 6.0;
@@ -170,19 +195,28 @@ void fragment() {
 		h = vnoise(fl * 80.0) * 0.002;
 		rough = 1.0;
 	} else if (mat == 6) {
-		// courtyard cobbles
+		// courtyard cobbles: domed setts of mixed granite, irregular and
+		// chipped, sunk in dark grit with moss in the gaps
 		vec2 cell;
-		float d = cobbles(fl * vec2(2.6, 3.0), cell);
+		vec2 wp = fl + (vec2(vnoise(fl * 2.1), vnoise(fl * 2.1 + 5.3)) - 0.5) * 0.16;
+		float d = cobbles(wp * vec2(2.6, 3.0), cell);
+		d += (vnoise(fl * 16.0) - 0.5) * 0.05;
 		float hs = h21(cell);
-		float p = pillow(d, 0.05, 0.35);
-		h = p * 0.03;
-		vec3 base = vec3(0.25, 0.235, 0.22) * (0.65 + hs * 0.55) * (0.8 + fbm(fl * 0.7) * 0.4);
-		if (hs > 0.9) base = vec3(0.26, 0.3, 0.18);
-		vec3 gap = vec3(0.13, 0.115, 0.1);
+		float p = pillow(d, 0.05, 0.32);
+		h = p * 0.032;
+		vec3 base = mix(vec3(0.17, 0.165, 0.16), vec3(0.3, 0.285, 0.27), hs);
+		float tone = h21(cell + 3.1);
+		base = mix(base, base * vec3(1.12, 0.98, 0.84), smoothstep(0.55, 1.0, tone));   // rusty, iron-rich setts
+		base = mix(base, base * vec3(0.88, 0.95, 1.08), smoothstep(0.45, 0.0, tone));   // blue-grey ones
+		base *= 0.85 + fbm(fl * 0.7) * 0.3;
+		if (hs > 0.93) base = vec3(0.24, 0.26, 0.2);                                     // the odd mossy one
+		float moss = smoothstep(0.45, 0.75, fbm(fl * 1.3 + 2.0));
+		vec3 gap = mix(vec3(0.075, 0.065, 0.055), vec3(0.09, 0.12, 0.05), moss);
 		float wet = smoothstep(0.6, 0.8, fbm(fl * 0.4));
-		col = mix(gap, base * (0.9 + grain * 0.2), smoothstep(0.03, 0.12, d));
+		col = mix(gap, base * (0.92 + grain * 0.16), smoothstep(0.03, 0.12, d));
+		rough = mix(0.97, mix(0.78, 0.35, wet), p);
+		weather_stone(fl * 1.3, hs, p, col, h, rough);
 		col *= mix(1.0, 0.7, wet);
-		rough = mix(0.95, mix(0.8, 0.35, wet), p);
 	} else if (mat == 7) {
 		// garden earth: soil, mud pools, grass and pebbles
 		float n1 = fbm(fl * 2.2);

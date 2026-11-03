@@ -85,6 +85,8 @@ func build(for_menu := false, report := Callable(), vent_seed := 0, which := "ou
 	var props_task := _start_prop_builds()
 	if not "env" in off:
 		_build_environment()
+		if not "lens" in OS.get_environment("CINDER_DISABLE"):
+			_build_lens()
 	if custom:
 		await map.build_world(self)
 	elif not "terrain" in off:
@@ -123,6 +125,9 @@ var _vent_seed := 0
 var ambience: Node3D
 ## Wind, mist, lightning and rain (scripts/world/weather.gd).
 var weather: Node3D
+## The cloud dome's material (weather sets its lightning flash).
+var sky_material: ShaderMaterial
+var _cloud_dome: Node3D
 var world_env: WorldEnvironment
 
 
@@ -632,9 +637,12 @@ func _build_environment() -> void:
 	var sm := ShaderMaterial.new()
 	sm.shader = preload("res://shaders/night_sky.gdshader")
 	sky.sky_material = sm
-	# Static sky: rendered into the radiance map once, not every frame.
+	# Static sky: rendered into the radiance map once, not every frame (the
+	# moving clouds are a dome in front of it, see _build_clouds).
 	sky.process_mode = Sky.PROCESS_MODE_QUALITY
 	sky.radiance_size = Sky.RADIANCE_SIZE_64
+	if map_id == "times_square":
+		sm.set_shader_parameter("ember", Color(0.32, 0.12, 0.08))
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
@@ -676,6 +684,57 @@ func _build_environment() -> void:
 	moon.directional_shadow_max_distance = [0.0, 22.0, 32.0, 45.0][q]
 	moon.light_volumetric_fog_energy = 0.4
 	add_child(moon)
+	# the moon in the sky sits where its light comes from
+	sm.set_shader_parameter("moon_dir", moon.basis.z)
+	if not "clouds" in OS.get_environment("CINDER_DISABLE"):
+		_build_clouds(moon.basis.z, sm.get_shader_parameter("horizon"))
+
+
+## Drifting cloud on a dome that follows the camera (shaders/clouds.gdshader).
+func _build_clouds(moon_dir: Vector3, horizon) -> void:
+	var dome := MeshInstance3D.new()
+	dome.name = "Clouds"
+	var sphere := SphereMesh.new()
+	sphere.radius = 280.0
+	sphere.height = 280.0
+	sphere.radial_segments = 24
+	sphere.rings = 12
+	sphere.is_hemisphere = true
+	dome.mesh = sphere
+	dome.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	dome.extra_cull_margin = 1000.0
+	var m := ShaderMaterial.new()
+	m.shader = preload("res://shaders/clouds.gdshader")
+	m.render_priority = -100
+	m.set_shader_parameter("moon_dir", moon_dir)
+	if horizon is Color:
+		m.set_shader_parameter("horizon", horizon)
+	if map_id == "times_square":
+		# low storm cloud, lit orange-pink from below by the city
+		m.set_shader_parameter("cloud_cover", 0.86)
+		m.set_shader_parameter("cloud_glow", Color(0.3, 0.13, 0.1))
+		m.set_shader_parameter("cloud_drift", Vector2(0.012, 0.004))
+	dome.material_override = m
+	add_child(dome)
+	_cloud_dome = dome
+	sky_material = m
+
+
+## Lens vignette and film grain over the 3D view, under the HUD (shaders/lens.gdshader).
+func _build_lens() -> void:
+	if Settings.quality() < 2:      # a full-screen blend: too much for weak GPUs
+		return
+	var layer := CanvasLayer.new()
+	layer.name = "Lens"
+	layer.layer = -1
+	var rect := ColorRect.new()
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var m := ShaderMaterial.new()
+	m.shader = preload("res://shaders/lens.gdshader")
+	rect.material = m
+	layer.add_child(rect)
+	add_child(layer)
 
 
 func _build_atmosphere() -> void:
@@ -719,6 +778,10 @@ func _process(dt: float) -> void:
 		var f := 0.82 + 0.1 * sin(_time * 9.0 + s) + 0.08 * sin(_time * 23.0 + s * 2.0)
 		if is_instance_valid(l.light):
 			l.light.light_energy = l.base * f
+	if _cloud_dome:
+		var cam := get_viewport().get_camera_3d()
+		if cam:
+			_cloud_dome.global_position = cam.global_position
 
 
 # =========================================================================

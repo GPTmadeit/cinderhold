@@ -314,7 +314,9 @@ static func _material(vox: Dictionary, glow: Dictionary, tlo: Vector3i, thi: Vec
 		data[i * 4] = c.r8
 		data[i * 4 + 1] = c.g8
 		data[i * 4 + 2] = c.b8
-		data[i * 4 + 3] = 255 if glow.has(p) else roundi(clampf(c.a, 0.0, 0.5) / 0.5 * 0.4 * 255.0)
+		# alpha: 255 glowing, else surface class * 32 + noise amount (0..0.5 as 0..25)
+		var cls := clampi(int(c.a), 0, 6)
+		data[i * 4 + 3] = 255 if glow.has(p) else cls * 32 + roundi(clampf(c.a - cls, 0.0, 0.5) / 0.5 * 25.0)
 		filled[i] = 1
 		front.append(i)
 	var offs := [1, -1, ts.x, -ts.x, txy, -txy]
